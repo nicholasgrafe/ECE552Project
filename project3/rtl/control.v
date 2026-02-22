@@ -6,7 +6,7 @@ module control (
     input wire [ 6:0 ] i_opcode,
 
     // immediate decode controls
-    output reg [ 5:0 ] o_imm_fmt;
+    output reg [ 5:0 ] o_imm_fmt,
 
     // register file controls
     output reg o_rd_wen,
