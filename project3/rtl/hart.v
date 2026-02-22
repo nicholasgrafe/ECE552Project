@@ -149,8 +149,8 @@ module hart #(
     assign instruction = i_imem_rdata;
     
     // DECODE LOGIC
-    assign funct3 = instruction[14:12]
-    assign funct7 = instruction[31:25]
+    assign funct3 = instruction[14:12];
+    assign funct7 = instruction[31:25];
 
     // Control unit wires
     wire [5:0] ctrl_imm_fmt;
@@ -180,15 +180,61 @@ module hart #(
         .o_i_type_j  (ctrl_i_type_j)
     );
 
-    // REGFILE LOGIC
+    // IMMEDIATE DECODER
+    wire [31:0] immediate;
+
+    imm imm_decoder (
+        .i_inst     (instruction),
+        .i_format   (ctrl_imm_fmt),
+        .o_immediate(immediate)
+    );
+
+    // REGFILE
+    wire [31:0] rs1_rdata;
+    wire [31:0] rs2_rdata;
+    wire [31:0] rd_wdata;
+
+    // need to insert the writeback muxes that determine rd_wdata;
+
+    rf #(.BYPASS_EN(0)) regfile (
+        .i_clk      (i_clk),
+        .i_rst      (i_rst),
+        .i_rs1_raddr(instruction[19:15]),
+        .o_rs1_rdata(rs1_rdata),
+        .i_rs2_raddr(instruction[24:20]),
+        .o_rs2_rdata(rs2_rdata),
+        .i_rd_wen   (ctrl_rd_wen),
+        .i_rd_waddr (instruction[11:7]),
+        .i_rd_wdata (rd_wdata)
+    );
 
     // ALU/EXECUTE LOGIC
+    wire [31:0] alu_op2;
+    wire [31:0] alu_result;
+    wire        alu_eq;
+    wire        alu_slt;
+
+    assign alu_op2 = ctrl_alu_imm ? immediate : rs2_rdata;
+
+    alu alu_inst (
+        .i_opsel   (funct3),
+        .i_sub     (funct7[5]),
+        .i_unsigned(funct3[0]),
+        .i_arith   (funct7[5]),
+        .i_op1     (rs1_rdata),
+        .i_op2     (alu_op2),
+        .o_result  (alu_result),
+        .o_eq      (alu_eq),
+        .o_slt     (alu_slt)
+    );
+
+    // MEMORY LOGIC
 
     // BRANCH LOGIC
     
+    // JUMP LOGIC
+    
     // NEXT PC LOGIC
-
-    // MEMORY LOGIC
 
 
 endmodule
