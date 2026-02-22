@@ -256,13 +256,6 @@ module hart #(
         .o_branch   (branch_result)
     );
 
-    // todos 
-
-    // =========================================================================
-    // SIGN EXTENSION / ZERO EXTENSION
-    // =========================================================================
-
-
     // =========================================================================
     // UPDATE PC LOGIC / JUMP LOGIC
     // =========================================================================
@@ -287,6 +280,47 @@ module hart #(
     // =========================================================================
     // MEMORY / WRITEBACK LOGIC
     // =========================================================================
+    wire [31:0] mem_addr   = alu_result;
+    wire [1:0]  mem_offset = mem_addr[1:0];
+
+    // --- DMEM address (word-aligned) ---
+    assign o_dmem_addr = {mem_addr[31:2], 2'b00};
+
+    // --- Read / write enables ---
+    assign o_dmem_ren = ctrl_dmem_ren;
+    assign o_dmem_wen = ctrl_dmem_wen;
+
+    // --- Byte mask ---
+    wire [3:0] byte_mask = (mem_offset == 2'b00) ? 4'b0001 :
+                           (mem_offset == 2'b01) ? 4'b0010 :
+                           (mem_offset == 2'b10) ? 4'b0100 :
+                                                   4'b1000;
+    wire [3:0] half_mask = mem_offset[1] ? 4'b1100 : 4'b0011;
+
+    assign o_dmem_mask = (funct3[1:0] == 2'b00) ? byte_mask :
+                         (funct3[1:0] == 2'b01) ? half_mask :
+                                                  4'b1111;      // word
+
+    // --- Write data (shift value into correct byte lane) ---
+    wire [31:0] sb_wdata = (mem_offset == 2'b00) ? {24'b0, rs2_rdata[ 7:0]        } :
+                           (mem_offset == 2'b01) ? {16'b0, rs2_rdata[ 7:0],  8'b0 } :
+                           (mem_offset == 2'b10) ? { 8'b0, rs2_rdata[ 7:0], 16'b0 } :
+                                                   {       rs2_rdata[ 7:0], 24'b0 };
+    wire [31:0] sh_wdata = mem_offset[1] ? {rs2_rdata[15:0], 16'b0}
+                                         : {16'b0, rs2_rdata[15:0]};
+
+    assign o_dmem_wdata = (funct3[1:0] == 2'b00) ? sb_wdata :
+                          (funct3[1:0] == 2'b01) ? sh_wdata :
+                                                   rs2_rdata;   // word
+
+    // --- Sign/zero extension for loads ---
+    wire [31:0] dmem_ext;
+    sign_zero_ext sext (
+        .i_dmem_rdata (i_dmem_rdata),
+        .i_funct3     (funct3),
+        .i_byte_offset(mem_offset),
+        .o_dmem_ext   (dmem_ext)
+    );
 
     assign rd_wdata =
         ctrl_i_type_lui         ? immediate     :   // LUI

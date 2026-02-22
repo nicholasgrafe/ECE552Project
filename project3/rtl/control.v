@@ -112,6 +112,7 @@ module control (
                 o_i_type_u = U_TYPE;
             end
             default: begin
+                // add default case
             end
         endcase
     end
