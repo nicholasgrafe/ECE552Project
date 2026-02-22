@@ -267,11 +267,13 @@ module hart #(
     wire [31:0] jalr_target;
     assign jalr_target = alu_result & 32'hfffffffe;
 
-    assign next_pc =
-        (ctrl_i_type_jmp & !ctrl_jump_sel)  ? jalr_target : // JALR
-        (ctrl_i_type_jmp & ctrl_jump_sel)   ? pc_plus_imm : // JAL
-        branch_result                       ? pc_plus_imm : // Branch
-        pc_plus_4;                                          // Default 
+    wire [31:0] mux_jump_select;
+    assign mux_jump_select = ctrl_jump_sel ? pc_plus_imm : jalr_target;
+
+    wire [31:0] mux_jump_or_branch;
+    assign mux_jump_or_branch = branch_result ? pc_plus_imm : pc_plus_4;
+
+    assign next_pc = ctrl_i_type_jmp ? mux_jump_select : mux_jump_or_branch;
 
     // =========================================================================
     // MEMORY / WRITEBACK LOGIC
@@ -314,13 +316,16 @@ module hart #(
         .o_dmem_ext   (dmem_ext)
     );
 
-    // writeback muxes
-    assign rd_wdata =
-        ctrl_i_type_lui         ? immediate     :   // LUI
-        ctrl_i_type_unsigned    ? pc_plus_imm   :   // AUIPC
-        ctrl_i_type_jmp         ? pc_plus_4     :   // JAL / JALR
-        ctrl_mem_to_reg         ? dmem_ext      :   // LOAD
-        alu_result;                                 // ALU (R / I type)
+    wire [31:0] mux_mem_to_reg;
+    assign mux_mem_to_reg = ctrl_mem_to_reg ? dmem_ext : alu_result;
+
+    wire [31:0] mux_jump_type;
+    assign mux_jump_type = ctrl_i_type_jmp ? pc_plus_4 : mux_mem_to_reg;
+
+    wire [31:0] mux_lui_en;
+    assign mux_lui_en = ctrl_i_type_lui ? immediate : pc_plus_imm;
+
+    assign rd_wdata = ctrl_i_type_unsigned ? mux_lui_en : mux_jump_type;
 
     // =========================================================================
     // RETIRE INTERFACE
