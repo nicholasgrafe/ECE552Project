@@ -137,6 +137,7 @@ module hart #(
     // PROGRAM COUNTER
     // =========================================================================
     reg [31:0] pc;
+    wire [31:0] next_pc;
 
     always @(posedge i_clk) begin
         if (i_rst)
@@ -267,8 +268,6 @@ module hart #(
 
     wire [31:0] jalr_target;
     assign jalr_target = alu_result & 32'hfffffffe;
-
-    wire [31:0] next_pc;
 
     assign next_pc =
         (ctrl_i_type_jmp & !ctrl_jump_sel)  ? jalr_target : // JALR
