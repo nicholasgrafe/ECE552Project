@@ -130,8 +130,174 @@ module hart #(
     ,`RVFI_OUTPUTS,
 `endif
 );
+
     // Fill in your implementation here.
+
+    // =========================================================================
+    // PROGRAM COUNTER
+    // =========================================================================
+    reg [31:0] pc;
+
+    always @(posedge i_clk) begin
+        if (i_rst)
+            pc <= RESET_ADDR;
+        else
+            pc <= next_pc;
+    end
+
+    // =========================================================================
+    // INSTRUCTION FETCH
+    // =========================================================================
+    wire [31:0] instruction;
+    wire [2:0] funct3;
+    wire [6:0] funct7;
+
+    assign o_imem_raddr = pc;
+    assign instruction = i_imem_rdata;
     
+    // =========================================================================
+    // DECODE LOGIC
+    // =========================================================================
+    assign funct3 = instruction[14:12];
+    assign funct7 = instruction[31:25];
+
+    // Control unit wires
+    wire [5:0] ctrl_imm_fmt;
+    wire       ctrl_rd_wen;
+    wire       ctrl_i_type_lui;
+    wire       ctrl_i_type_unsigned;
+    wire       ctrl_alu_imm;
+    wire       ctrl_dmem_ren;
+    wire       ctrl_dmem_wen;
+    wire       ctrl_mem_to_reg;
+    wire       ctrl_branch_en;
+    wire       ctrl_jump_sel;
+    wire       ctrl_i_type_jmp;
+
+    control ctrl_unit(
+        .i_opcode    (instruction[6:0]),
+        .o_imm_fmt   (ctrl_imm_fmt),
+        .o_rd_wen    (ctrl_rd_wen),
+        .o_lui_en    (ctrl_i_type_lui),
+        .o_i_type_u  (ctrl_i_type_unsigned),
+        .o_alu_imm   (ctrl_alu_imm),
+        .o_dmem_ren  (ctrl_dmem_ren),
+        .o_dmem_wen  (ctrl_dmem_wen),
+        .o_mem_to_reg(ctrl_mem_to_reg),
+        .o_branch_en (ctrl_branch_en),
+        .o_jump_sel  (ctrl_jump_sel),
+        .o_i_type_j  (ctrl_i_type_jmp)
+    );
+
+    // =========================================================================
+    // IMMEDIATE DECODER
+    // =========================================================================
+    wire [31:0] immediate;
+
+    imm imm_decoder (
+        .i_inst     (instruction),
+        .i_format   (ctrl_imm_fmt),
+        .o_immediate(immediate)
+    );
+
+    // =========================================================================
+    // REGFILE
+    // =========================================================================
+    wire [31:0] rs1_rdata;
+    wire [31:0] rs2_rdata;
+    wire [31:0] rd_wdata;
+
+    // need to insert the writeback muxes that determine rd_wdata;
+
+    rf #(.BYPASS_EN(0)) regfile (
+        .i_clk      (i_clk),
+        .i_rst      (i_rst),
+        .i_rs1_raddr(instruction[19:15]),
+        .o_rs1_rdata(rs1_rdata),
+        .i_rs2_raddr(instruction[24:20]),
+        .o_rs2_rdata(rs2_rdata),
+        .i_rd_wen   (ctrl_rd_wen),
+        .i_rd_waddr (instruction[11:7]),
+        .i_rd_wdata (rd_wdata)
+    );
+
+    // =========================================================================
+    // ALU / EXECUTE LOGIC
+    // =========================================================================
+    wire [31:0] alu_op2;
+    wire [31:0] alu_result;
+    wire        alu_eq;
+    wire        alu_slt;
+
+    assign alu_op2 = ctrl_alu_imm ? immediate : rs2_rdata;
+
+    alu alu_inst (
+        .i_opsel   (funct3),
+        .i_sub     (funct7[5]),
+        .i_unsigned(funct3[0]),
+        .i_arith   (funct7[5]),
+        .i_op1     (rs1_rdata),
+        .i_op2     (alu_op2),
+        .o_result  (alu_result),
+        .o_eq      (alu_eq),
+        .o_slt     (alu_slt)
+    );
+
+    // =========================================================================
+    // BRANCH LOGIC
+    // =========================================================================
+    wire branch_result;
+
+    branch_logic branch_logic_inst (
+        .i_funct3   (funct3),
+        .i_eq       (alu_eq),
+        .i_slt      (alu_slt),
+        .i_branch_en(ctrl_branch_en),
+        .o_branch   (branch_result)
+    );
+
+    // todos 
+
+    // =========================================================================
+    // SIGN EXTENSION / ZERO EXTENSION
+    // =========================================================================
+
+
+    // =========================================================================
+    // UPDATE PC LOGIC / JUMP LOGIC
+    // =========================================================================
+
+    wire[31:0] pc_plus_4;
+    assign pc_plus_4 = pc + 32'd4;
+
+    wire [31:0] pc_plus_imm;
+    assign pc_plus_imm = pc + immediate;
+
+    wire [31:0] jalr_target;
+    assign jalr_target = alu_result & 32'hfffffffe;
+
+    wire branch_taken;
+    assign branch_taken = ctrl_branch_en && branch_result;
+
+    wire [31:0] next_pc;
+
+    assign next_pc =
+        (ctrl_i_type_jmp & !ctrl_jump_sel)  ? jalr_target : // JALR
+        (ctrl_i_type_jmp & ctrl_jump_sel)   ? pc_plus_imm : // JAL
+        branch_taken                        ? pc_plus_imm : // Branch
+        pc_plus_4;                                          // Default 
+
+    // =========================================================================
+    // MEMORY / WRITEBACK LOGIC
+    // =========================================================================
+
+    assign rd_wdata =
+        ctrl_i_type_lui         ? immediate     :   // LUI
+        ctrl_i_type_unsigned    ? pc_plus_imm   :   // AUIPC
+        ctrl_i_type_jmp         ? pc_plus_4     :   // JAL / JALR
+        ctrl_mem_to_reg         ? i_dmem_rdata  :   // LOAD
+        alu_result;                                 // ALU (R / I type)
+
 endmodule
 
 `default_nettype wire
