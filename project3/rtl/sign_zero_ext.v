@@ -8,7 +8,7 @@ module sign_zero_ext (
     output wire [31:0] o_dmem_ext
 );
     wire [7:0] byte_val;
-    wire [15:0] half_val;
+    wire [15:0] hw_val;
 
     // Byte selection based on offset
     assign byte_val = (i_byte_offset == 2'b00) ? i_dmem_rdata[ 7: 0] :
