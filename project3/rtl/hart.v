@@ -130,6 +130,9 @@ module hart #(
     ,`RVFI_OUTPUTS,
 `endif
 );
+
+    // Fill in your implementation here.
+
     // =========================================================================
     // PROGRAM COUNTER
     // =========================================================================
@@ -161,29 +164,29 @@ module hart #(
     // Control unit wires
     wire [5:0] ctrl_imm_fmt;
     wire       ctrl_rd_wen;
-    wire       ctrl_lui_en;
-    wire       ctrl_i_type_u;
+    wire       ctrl_i_type_lui;
+    wire       ctrl_i_type_unsigned;
     wire       ctrl_alu_imm;
     wire       ctrl_dmem_ren;
     wire       ctrl_dmem_wen;
     wire       ctrl_mem_to_reg;
     wire       ctrl_branch_en;
     wire       ctrl_jump_sel;
-    wire       ctrl_i_type_j;
+    wire       ctrl_i_type_jmp;
 
     control ctrl_unit(
         .i_opcode    (instruction[6:0]),
         .o_imm_fmt   (ctrl_imm_fmt),
         .o_rd_wen    (ctrl_rd_wen),
-        .o_lui_en    (ctrl_lui_en),
-        .o_i_type_u  (ctrl_i_type_u),
+        .o_lui_en    (ctrl_i_type_lui),
+        .o_i_type_u  (ctrl_i_type_unsigned),
         .o_alu_imm   (ctrl_alu_imm),
         .o_dmem_ren  (ctrl_dmem_ren),
         .o_dmem_wen  (ctrl_dmem_wen),
         .o_mem_to_reg(ctrl_mem_to_reg),
         .o_branch_en (ctrl_branch_en),
         .o_jump_sel  (ctrl_jump_sel),
-        .o_i_type_j  (ctrl_i_type_j)
+        .o_i_type_j  (ctrl_i_type_jmp)
     );
 
     // =========================================================================
@@ -254,8 +257,28 @@ module hart #(
     );
 
     // =========================================================================
-    // UPDATE PC LOGIC
+    // UPDATE PC LOGIC / JUMP LOGIC
     // =========================================================================
+
+    wire[31:0] pc_plus_4;
+    assign pc_plus_4 = pc + 32'd4;
+
+    wire [31:0] pc_plus_imm;
+    assign pc_plus_imm = pc + immediate;
+
+    wire [31:0] jalr_target;
+    assign jalr_target = alu_result & 32'hfffffffe;
+
+    wire branch_taken;
+    assign branch_taken = ctrl_branch_en && branch_result;
+
+    wire [31:0] next_pc;
+
+    assign next_pc =
+        (ctrl_i_type_jmp & !ctrl_jump_sel)  ? jalr_target : // JALR
+        (ctrl_i_type_jmp & ctrl_jump_sel)   ? pc_plus_imm : // JAL
+        branch_taken                        ? pc_plus_imm : // Branch
+        pc_plus_4;                                          // Default 
 
     // =========================================================================
     // MEMORY / WRITEBACK LOGIC
@@ -301,6 +324,13 @@ module hart #(
         .i_byte_offset(mem_offset),
         .o_dmem_ext   (dmem_ext)
     );
+
+    assign rd_wdata =
+        ctrl_i_type_lui         ? immediate     :   // LUI
+        ctrl_i_type_unsigned    ? pc_plus_imm   :   // AUIPC
+        ctrl_i_type_jmp         ? pc_plus_4     :   // JAL / JALR
+        ctrl_mem_to_reg         ? i_dmem_rdata  :   // LOAD
+        alu_result;                                 // ALU (R / I type)
 
 endmodule
 
