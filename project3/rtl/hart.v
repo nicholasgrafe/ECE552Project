@@ -259,7 +259,6 @@ module hart #(
     // =========================================================================
     // UPDATE PC LOGIC / JUMP LOGIC
     // =========================================================================
-
     wire[31:0] pc_plus_4;
     assign pc_plus_4 = pc + 32'd4;
 
@@ -269,15 +268,12 @@ module hart #(
     wire [31:0] jalr_target;
     assign jalr_target = alu_result & 32'hfffffffe;
 
-    wire branch_taken;
-    assign branch_taken = ctrl_branch_en && branch_result;
-
     wire [31:0] next_pc;
 
     assign next_pc =
         (ctrl_i_type_jmp & !ctrl_jump_sel)  ? jalr_target : // JALR
         (ctrl_i_type_jmp & ctrl_jump_sel)   ? pc_plus_imm : // JAL
-        branch_taken                        ? pc_plus_imm : // Branch
+        branch_result                       ? pc_plus_imm : // Branch
         pc_plus_4;                                          // Default 
 
     // =========================================================================
@@ -329,8 +325,50 @@ module hart #(
         ctrl_i_type_lui         ? immediate     :   // LUI
         ctrl_i_type_unsigned    ? pc_plus_imm   :   // AUIPC
         ctrl_i_type_jmp         ? pc_plus_4     :   // JAL / JALR
-        ctrl_mem_to_reg         ? i_dmem_rdata  :   // LOAD
+        ctrl_mem_to_reg         ? dmem_ext      :   // LOAD
         alu_result;                                 // ALU (R / I type)
+
+    // =========================================================================
+    // RETIRE INTERFACE
+    // =========================================================================
+
+    // Single-cycle: one instruction retires every cycle
+    assign o_retire_valid = 1'b1;
+
+    // Raw fetched instruction word, unmodified
+    assign o_retire_inst = instruction;
+
+    // ebreak: opcode=SYSTEM(1110011), funct3=000, funct12=000000000001
+    wire is_ebreak = (instruction[6:0]  == 7'b1110011) &&
+                     (instruction[14:12] == 3'b000)     &&
+                     (instruction[31:20] == 12'b000000000001);
+    assign o_retire_halt = is_ebreak;
+
+    // No trap detection in project 3
+    assign o_retire_trap = 1'b0;
+
+    // rs1 is read by: R, I, LOAD, STORE, BRANCH, JALR
+    // rs1 NOT read by: LUI/AUIPC (ctrl_i_type_unsigned) and JAL (ctrl_i_type_jmp && ctrl_jump_sel)
+    wire retire_rs1_used = !ctrl_i_type_unsigned && !(ctrl_i_type_jmp && ctrl_jump_sel);
+    assign o_retire_rs1_raddr = retire_rs1_used ? instruction[19:15] : 5'd0;
+    assign o_retire_rs1_rdata = retire_rs1_used ? rs1_rdata          : 32'd0;
+
+    // rs2 is read by: R-type, STORE, BRANCH
+    // rs2 NOT read by: I, LOAD, JALR, JAL, LUI, AUIPC
+    // (!ctrl_alu_imm && !ctrl_i_type_jmp && !ctrl_i_type_unsigned) covers R and BRANCH;
+    // ctrl_dmem_wen covers STORE (which sets ctrl_alu_imm=1 for address calc but still reads rs2)
+    wire retire_rs2_used = (!ctrl_alu_imm && !ctrl_i_type_jmp && !ctrl_i_type_unsigned)
+                           || ctrl_dmem_wen;
+    assign o_retire_rs2_raddr = retire_rs2_used ? instruction[24:20] : 5'd0;
+    assign o_retire_rs2_rdata = retire_rs2_used ? rs2_rdata          : 32'd0;
+
+    // rd is written only when ctrl_rd_wen; otherwise report 5'd0
+    assign o_retire_rd_waddr = ctrl_rd_wen ? instruction[11:7] : 5'd0;
+    assign o_retire_rd_wdata = rd_wdata;
+
+    // PC tracking
+    assign o_retire_pc      = pc;
+    assign o_retire_next_pc = next_pc;
 
 endmodule
 
