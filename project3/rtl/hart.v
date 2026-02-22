@@ -180,9 +180,13 @@ module hart #(
         .o_i_type_j  (ctrl_i_type_j)
     );
 
+    // REGFILE LOGIC
 
     // ALU/EXECUTE LOGIC
 
+    // BRANCH LOGIC
+    
+    // NEXT PC LOGIC
 
     // MEMORY LOGIC
 
