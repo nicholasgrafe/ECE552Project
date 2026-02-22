@@ -231,7 +231,16 @@ module hart #(
     // MEMORY LOGIC
 
     // BRANCH LOGIC
-    
+    wire branch_result;
+
+    branch_logic branch_logic_inst (
+        .i_funct3   (funct3),
+        .i_eq       (alu_eq),
+        .i_slt      (alu_slt),
+        .i_branch_en(ctrl_branch_en),
+        .o_branch   (branch_result)
+    );
+
     // JUMP LOGIC
     
     // NEXT PC LOGIC
