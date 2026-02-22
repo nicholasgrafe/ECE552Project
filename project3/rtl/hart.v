@@ -326,7 +326,7 @@ module hart #(
         ctrl_i_type_lui         ? immediate     :   // LUI
         ctrl_i_type_unsigned    ? pc_plus_imm   :   // AUIPC
         ctrl_i_type_jmp         ? pc_plus_4     :   // JAL / JALR
-        ctrl_mem_to_reg         ? i_dmem_rdata  :   // LOAD
+        ctrl_mem_to_reg         ? dmem_ext      :   // LOAD
         alu_result;                                 // ALU (R / I type)
 
 endmodule
