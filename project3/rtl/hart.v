@@ -276,15 +276,12 @@ module hart #(
     wire [31:0] jalr_target;
     assign jalr_target = alu_result & 32'hfffffffe;
 
-    wire branch_taken;
-    assign branch_taken = ctrl_branch_en && branch_result;
-
     wire [31:0] next_pc;
 
     assign next_pc =
         (ctrl_i_type_jmp & !ctrl_jump_sel)  ? jalr_target : // JALR
         (ctrl_i_type_jmp & ctrl_jump_sel)   ? pc_plus_imm : // JAL
-        branch_taken                        ? pc_plus_imm : // Branch
+        branch_result                       ? pc_plus_imm : // Branch
         pc_plus_4;                                          // Default 
 
     // =========================================================================
