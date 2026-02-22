@@ -208,8 +208,6 @@ module hart #(
     wire [31:0] rs2_rdata;
     wire [31:0] rd_wdata;
 
-    // need to insert the writeback muxes that determine rd_wdata;
-
     rf #(.BYPASS_EN(0)) regfile (
         .i_clk      (i_clk),
         .i_rst      (i_rst),
@@ -233,8 +231,8 @@ module hart #(
     assign alu_op2 = ctrl_alu_imm ? immediate : rs2_rdata;
 
     alu alu_inst (
-        .i_opsel   (funct3),
-        .i_sub     (funct7[5]),
+        .i_opsel   ((ctrl_dmem_ren | ctrl_dmem_wen) ? 3'b000 : funct3),
+        .i_sub     (~ctrl_alu_imm & funct7[5]),
         .i_unsigned(funct3[0]),
         .i_arith   (funct7[5]),
         .i_op1     (rs1_rdata),
@@ -281,14 +279,11 @@ module hart #(
     wire [31:0] mem_addr   = alu_result;
     wire [1:0]  mem_offset = mem_addr[1:0];
 
-    // --- DMEM address (word-aligned) ---
     assign o_dmem_addr = {mem_addr[31:2], 2'b00};
 
-    // --- Read / write enables ---
     assign o_dmem_ren = ctrl_dmem_ren;
     assign o_dmem_wen = ctrl_dmem_wen;
 
-    // --- Byte mask ---
     wire [3:0] byte_mask = (mem_offset == 2'b00) ? 4'b0001 :
                            (mem_offset == 2'b01) ? 4'b0010 :
                            (mem_offset == 2'b10) ? 4'b0100 :
@@ -297,21 +292,20 @@ module hart #(
 
     assign o_dmem_mask = (funct3[1:0] == 2'b00) ? byte_mask :
                          (funct3[1:0] == 2'b01) ? half_mask :
-                                                  4'b1111;      // word
+                                                  4'b1111;
 
-    // --- Write data (shift value into correct byte lane) ---
     wire [31:0] sb_wdata = (mem_offset == 2'b00) ? {24'b0, rs2_rdata[ 7:0]        } :
                            (mem_offset == 2'b01) ? {16'b0, rs2_rdata[ 7:0],  8'b0 } :
                            (mem_offset == 2'b10) ? { 8'b0, rs2_rdata[ 7:0], 16'b0 } :
                                                    {       rs2_rdata[ 7:0], 24'b0 };
     wire [31:0] sh_wdata = mem_offset[1] ? {rs2_rdata[15:0], 16'b0}
-                                         : {16'b0, rs2_rdata[15:0]};
+                                         : rs2_rdata;
 
     assign o_dmem_wdata = (funct3[1:0] == 2'b00) ? sb_wdata :
                           (funct3[1:0] == 2'b01) ? sh_wdata :
-                                                   rs2_rdata;   // word
+                                                   rs2_rdata;
 
-    // --- Sign/zero extension for loads ---
+    // Sign/zero extension module
     wire [31:0] dmem_ext;
     sign_zero_ext sext (
         .i_dmem_rdata (i_dmem_rdata),
@@ -320,6 +314,7 @@ module hart #(
         .o_dmem_ext   (dmem_ext)
     );
 
+    // writeback muxes
     assign rd_wdata =
         ctrl_i_type_lui         ? immediate     :   // LUI
         ctrl_i_type_unsigned    ? pc_plus_imm   :   // AUIPC
@@ -330,42 +325,22 @@ module hart #(
     // =========================================================================
     // RETIRE INTERFACE
     // =========================================================================
-
-    // Single-cycle: one instruction retires every cycle
     assign o_retire_valid = 1'b1;
 
-    // Raw fetched instruction word, unmodified
     assign o_retire_inst = instruction;
 
-    // ebreak: opcode=SYSTEM(1110011), funct3=000, funct12=000000000001
     wire is_ebreak = (instruction[6:0]  == 7'b1110011) &
                      (instruction[14:12] == 3'b000)     &
                      (instruction[31:20] == 12'b000000000001);
     assign o_retire_halt = is_ebreak;
 
-    // No trap detection in project 3
     assign o_retire_trap = 1'b0;
-
-    // rs1 is read by: R, I, LOAD, STORE, BRANCH, JALR
-    // rs1 NOT read by: LUI/AUIPC (ctrl_i_type_unsigned) and JAL (ctrl_i_type_jmp & ctrl_jump_sel)
-    wire retire_rs1_used = ~ctrl_i_type_unsigned & ~(ctrl_i_type_jmp & ctrl_jump_sel);
-    assign o_retire_rs1_raddr = retire_rs1_used ? instruction[19:15] : 5'd0;
-    assign o_retire_rs1_rdata = retire_rs1_used ? rs1_rdata          : 32'd0;
-
-    // rs2 is read by: R-type, STORE, BRANCH
-    // rs2 NOT read by: I, LOAD, JALR, JAL, LUI, AUIPC
-    // (~ctrl_alu_imm & ~ctrl_i_type_jmp & ~ctrl_i_type_unsigned) covers R and BRANCH;
-    // ctrl_dmem_wen covers STORE (which sets ctrl_alu_imm=1 for address calc but still reads rs2)
-    wire retire_rs2_used = (~ctrl_alu_imm & ~ctrl_i_type_jmp & ~ctrl_i_type_unsigned)
-                           | ctrl_dmem_wen;
-    assign o_retire_rs2_raddr = retire_rs2_used ? instruction[24:20] : 5'd0;
-    assign o_retire_rs2_rdata = retire_rs2_used ? rs2_rdata          : 32'd0;
-
-    // rd is written only when ctrl_rd_wen; otherwise report 5'd0
+    assign o_retire_rs1_raddr = instruction[19:15];
+    assign o_retire_rs1_rdata = rs1_rdata;
+    assign o_retire_rs2_raddr = instruction[24:20];
+    assign o_retire_rs2_rdata = rs2_rdata;
     assign o_retire_rd_waddr = ctrl_rd_wen ? instruction[11:7] : 5'd0;
     assign o_retire_rd_wdata = rd_wdata;
-
-    // PC tracking
     assign o_retire_pc      = pc;
     assign o_retire_next_pc = next_pc;
 

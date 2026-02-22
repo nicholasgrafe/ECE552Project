@@ -46,7 +46,7 @@ module alu (
 );
     // addition/subtraction operation
     wire [31:0] add_sub_op2 = i_sub ? ~i_op2 : i_op2;
-    wire [31:0] add_sub_result = i_op1 + add_sub_op2 + (i_sub ? 1'b1 : 1'b0);
+    wire [31:0] add_sub_result = i_op1 + add_sub_op2 + {{31{1'b0}}, i_sub};
 
     // shift left logical operation (op1 gets shifted by op2[4:0] bits)
     wire [31:0] sll_shift0 = (i_op2[0]) ? {i_op1[30:0], 1'b0} : i_op1;
@@ -56,9 +56,12 @@ module alu (
     wire [31:0] sll_result = (i_op2[4]) ? {sll_shift3[15:0], 16'b0000000000000000} : sll_shift3;
 
     // set less than operation (both signed and unsigned)
-    wire signed [31:0] signed_op1 = i_op1;
-    wire signed [31:0] signed_op2 = i_op2;
-    wire [31:0] slt_result = i_unsigned ? (i_op1 < i_op2 ? 32'd1 : 32'd0) : (signed_op1 < signed_op2 ? 32'd1 : 32'd0);
+    // Signed a < b: true when signs differ and a is negative,
+    //               or signs are equal and unsigned a < unsigned b
+    wire signed_lt = (i_op1[31] & ~i_op2[31]) |
+                     (~(i_op1[31] ^ i_op2[31]) & (i_op1 < i_op2));
+    wire [31:0] slt_result = i_unsigned ? (i_op1 < i_op2 ? 32'd1 : 32'd0)
+                                        : (signed_lt      ? 32'd1 : 32'd0);
 
     // shift right logical/arithmetic operation (op1 gets shifted by op2[4:0] bits)
     wire [31:0] srl_shift0 = (i_op2[0]) ? {i_arith ? i_op1[31] : 1'b0, i_op1[31:1]} : i_op1;
@@ -78,7 +81,7 @@ module alu (
                       32'b0;
 
     assign o_eq = (i_op1 == i_op2);
-    assign o_slt = i_unsigned ? (i_op1 < i_op2) : (signed_op1 < signed_op2);
+    assign o_slt = i_unsigned ? (i_op1 < i_op2) : signed_lt;
 endmodule
 
 `default_nettype wire

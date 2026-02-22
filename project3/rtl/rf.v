@@ -42,7 +42,7 @@ module rf #(
 
     // Asynchronous read ports with optional bypass
     generate
-        if (BYPASS_EN) begin
+        if (BYPASS_EN) begin : gen_bypass
             // if write address matches read address, forward write data
             assign o_rs1_rdata = (i_rs1_raddr == 5'd0) ? 32'd0 :
                                  (i_rd_wen && (i_rs1_raddr == i_rd_waddr)) ? i_rd_wdata :
@@ -50,21 +50,31 @@ module rf #(
             assign o_rs2_rdata = (i_rs2_raddr == 5'd0) ? 32'd0 :
                                  (i_rd_wen && (i_rs2_raddr == i_rd_waddr)) ? i_rd_wdata :
                                  registers[i_rs2_raddr];
-        end else begin
+        end else begin : gen_no_bypass
             assign o_rs1_rdata = (i_rs1_raddr == 5'd0) ? 32'd0 : registers[i_rs1_raddr];
             assign o_rs2_rdata = (i_rs2_raddr == 5'd0) ? 32'd0 : registers[i_rs2_raddr];
         end
     endgenerate
     
-    integer i;
-    
     // Synchronous write port
     always @(posedge i_clk) begin
         if (i_rst) begin
-            // reset regs to 0
-            for (i = 0; i < 32; i = i + 1) begin
-                registers[i] <= 32'd0;
-            end
+            registers[0] <= 32'd0; registers[1] <= 32'd0;
+            registers[2] <= 32'd0; registers[3] <= 32'd0;
+            registers[4] <= 32'd0; registers[5] <= 32'd0;
+            registers[6] <= 32'd0; registers[7] <= 32'd0;
+            registers[8] <= 32'd0; registers[9] <= 32'd0;
+            registers[10] <= 32'd0; registers[11] <= 32'd0;
+            registers[12] <= 32'd0; registers[13] <= 32'd0;
+            registers[14] <= 32'd0; registers[15] <= 32'd0;
+            registers[16] <= 32'd0; registers[17] <= 32'd0;
+            registers[18] <= 32'd0; registers[19] <= 32'd0;
+            registers[20] <= 32'd0; registers[21] <= 32'd0;
+            registers[22] <= 32'd0; registers[23] <= 32'd0;
+            registers[24] <= 32'd0; registers[25] <= 32'd0;
+            registers[26] <= 32'd0; registers[27] <= 32'd0;
+            registers[28] <= 32'd0; registers[29] <= 32'd0;
+            registers[30] <= 32'd0; registers[31] <= 32'd0;
         end else begin
             if (i_rd_wen && (i_rd_waddr != 5'd0)) begin
                 registers[i_rd_waddr] <= i_rd_wdata;

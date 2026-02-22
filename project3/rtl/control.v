@@ -109,7 +109,7 @@ module control (
                 o_rd_wen = 1'b1;
                 o_lui_en = 1'b0;
                 o_i_type_u = 1'b1;
-                o_i_type_u = U_TYPE;
+                o_imm_fmt = U_TYPE;
             end
             default: begin
                 // add default case
