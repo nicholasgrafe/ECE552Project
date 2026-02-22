@@ -130,7 +130,63 @@ module hart #(
     ,`RVFI_OUTPUTS,
 `endif
 );
-    // Fill in your implementation here.
+    // PROGRAM COUNTER
+    reg [31:0] pc;
+
+    always @(posedge i_clk) begin
+        if (i_rst)
+            pc <= RESET_ADDR;
+        else
+            pc <= next_pc;
+    end
+
+    // INSTRUCTION FETCH
+    wire [31:0] instruction;
+    wire [2:0] funct3;
+    wire [6:0] funct7;
+
+    assign o_imem_raddr = pc;
+    assign instruction = i_imem_rdata;
+    
+    // DECODE LOGIC
+    assign funct3 = instruction[14:12]
+    assign funct7 = instruction[31:25]
+
+    // Control unit wires
+    wire [5:0] ctrl_imm_fmt;
+    wire       ctrl_rd_wen;
+    wire       ctrl_lui_en;
+    wire       ctrl_i_type_u;
+    wire       ctrl_alu_imm;
+    wire       ctrl_dmem_ren;
+    wire       ctrl_dmem_wen;
+    wire       ctrl_mem_to_reg;
+    wire       ctrl_branch_en;
+    wire       ctrl_jump_sel;
+    wire       ctrl_i_type_j;
+
+    control ctrl_unit(
+        .i_opcode    (instruction[6:0]),
+        .o_imm_fmt   (ctrl_imm_fmt),
+        .o_rd_wen    (ctrl_rd_wen),
+        .o_lui_en    (ctrl_lui_en),
+        .o_i_type_u  (ctrl_i_type_u),
+        .o_alu_imm   (ctrl_alu_imm),
+        .o_dmem_ren  (ctrl_dmem_ren),
+        .o_dmem_wen  (ctrl_dmem_wen),
+        .o_mem_to_reg(ctrl_mem_to_reg),
+        .o_branch_en (ctrl_branch_en),
+        .o_jump_sel  (ctrl_jump_sel),
+        .o_i_type_j  (ctrl_i_type_j)
+    );
+
+
+    // ALU/EXECUTE LOGIC
+
+
+    // MEMORY LOGIC
+
+
 endmodule
 
 `default_nettype wire
