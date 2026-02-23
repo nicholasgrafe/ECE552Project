@@ -111,8 +111,10 @@ module control (
                 o_i_type_u = 1'b1;
                 o_imm_fmt = U_TYPE;
             end
-            default: begin
-                // add default case
+            default: begin // protect invalid opcodes overwriting regs/mem
+                o_rd_wen = 1'b0;
+                o_dmem_ren = 1'b0;
+                o_dmem_wen = 1'b0;
             end
         endcase
     end
