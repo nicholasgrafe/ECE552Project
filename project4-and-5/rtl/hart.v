@@ -130,7 +130,225 @@ module hart #(
     ,`RVFI_OUTPUTS,
 `endif
 );
+
     // Fill in your implementation here.
+
+    // =========================================================================
+    // PROGRAM COUNTER
+    // =========================================================================
+    reg [31:0] pc;
+    wire [31:0] next_pc;
+
+    always @(posedge i_clk) begin
+        if (i_rst)
+            pc <= RESET_ADDR;
+        else
+            pc <= next_pc;
+    end
+
+    // =========================================================================
+    // INSTRUCTION FETCH
+    // =========================================================================
+    wire [31:0] instruction;
+    wire [2:0] funct3;
+    wire [6:0] funct7;
+
+    assign o_imem_raddr = pc;
+    assign instruction = i_imem_rdata;
+    
+    // =========================================================================
+    // DECODE LOGIC
+    // =========================================================================
+    assign funct3 = instruction[14:12];
+    assign funct7 = instruction[31:25];
+
+    // Control unit wires
+    wire [5:0] ctrl_imm_fmt;
+    wire       ctrl_rd_wen;
+    wire       ctrl_i_type_lui;
+    wire       ctrl_i_type_unsigned;
+    wire       ctrl_alu_imm;
+    wire       ctrl_dmem_ren;
+    wire       ctrl_dmem_wen;
+    wire       ctrl_mem_to_reg;
+    wire       ctrl_branch_en;
+    wire       ctrl_jump_sel;
+    wire       ctrl_i_type_jmp;
+
+    control ctrl_unit(
+        .i_opcode    (instruction[6:0]),
+        .o_imm_fmt   (ctrl_imm_fmt),
+        .o_rd_wen    (ctrl_rd_wen),
+        .o_lui_en    (ctrl_i_type_lui),
+        .o_i_type_u  (ctrl_i_type_unsigned),
+        .o_alu_imm   (ctrl_alu_imm),
+        .o_dmem_ren  (ctrl_dmem_ren),
+        .o_dmem_wen  (ctrl_dmem_wen),
+        .o_mem_to_reg(ctrl_mem_to_reg),
+        .o_branch_en (ctrl_branch_en),
+        .o_jump_sel  (ctrl_jump_sel),
+        .o_i_type_j  (ctrl_i_type_jmp)
+    );
+
+    // =========================================================================
+    // IMMEDIATE DECODER
+    // =========================================================================
+    wire [31:0] immediate;
+
+    imm imm_decoder (
+        .i_inst     (instruction),
+        .i_format   (ctrl_imm_fmt),
+        .o_immediate(immediate)
+    );
+
+    // =========================================================================
+    // REGFILE
+    // =========================================================================
+    wire [31:0] rs1_rdata;
+    wire [31:0] rs2_rdata;
+    wire [31:0] rd_wdata;
+
+    rf #(.BYPASS_EN(0)) regfile (
+        .i_clk      (i_clk),
+        .i_rst      (i_rst),
+        .i_rs1_raddr(instruction[19:15]),
+        .o_rs1_rdata(rs1_rdata),
+        .i_rs2_raddr(instruction[24:20]),
+        .o_rs2_rdata(rs2_rdata),
+        .i_rd_wen   (ctrl_rd_wen),
+        .i_rd_waddr (instruction[11:7]),
+        .i_rd_wdata (rd_wdata)
+    );
+
+    // =========================================================================
+    // ALU / EXECUTE LOGIC
+    // =========================================================================
+    wire [31:0] alu_op2;
+    wire [31:0] alu_result;
+    wire        alu_eq;
+    wire        alu_slt;
+
+    assign alu_op2 = ctrl_alu_imm ? immediate : rs2_rdata;
+
+    alu alu_inst (
+        .i_opsel   ((ctrl_dmem_ren | ctrl_dmem_wen) ? 3'b000 : funct3),
+        .i_sub     (~ctrl_alu_imm & funct7[5]),
+        .i_unsigned(funct3[0]),
+        .i_arith   (funct7[5]),
+        .i_op1     (rs1_rdata),
+        .i_op2     (alu_op2),
+        .o_result  (alu_result),
+        .o_eq      (alu_eq),
+        .o_slt     (alu_slt)
+    );
+
+    // =========================================================================
+    // BRANCH LOGIC
+    // =========================================================================
+    wire branch_result;
+
+    branch_logic branch_logic_inst (
+        .i_funct3   (funct3),
+        .i_eq       (alu_eq),
+        .i_slt      (alu_slt),
+        .i_branch_en(ctrl_branch_en),
+        .o_branch   (branch_result)
+    );
+
+    // =========================================================================
+    // UPDATE PC LOGIC / JUMP LOGIC
+    // =========================================================================
+    wire[31:0] pc_plus_4;
+    assign pc_plus_4 = pc + 32'd4;
+
+    wire [31:0] pc_plus_imm;
+    assign pc_plus_imm = pc + immediate;
+
+    wire [31:0] jalr_target;
+    assign jalr_target = alu_result & 32'hfffffffe;
+
+    wire [31:0] mux_jump_select;
+    assign mux_jump_select = ctrl_jump_sel ? pc_plus_imm : jalr_target;
+
+    wire [31:0] mux_jump_or_branch;
+    assign mux_jump_or_branch = branch_result ? pc_plus_imm : pc_plus_4;
+
+    assign next_pc = ctrl_i_type_jmp ? mux_jump_select : mux_jump_or_branch;
+
+    // =========================================================================
+    // MEMORY / WRITEBACK LOGIC
+    // =========================================================================
+    wire [31:0] mem_addr   = alu_result;
+    wire [1:0]  mem_offset = mem_addr[1:0];
+
+    assign o_dmem_addr = {mem_addr[31:2], 2'b00};
+
+    assign o_dmem_ren = ctrl_dmem_ren;
+    assign o_dmem_wen = ctrl_dmem_wen;
+
+    wire [3:0] byte_mask = (mem_offset == 2'b00) ? 4'b0001 :
+                           (mem_offset == 2'b01) ? 4'b0010 :
+                           (mem_offset == 2'b10) ? 4'b0100 :
+                                                   4'b1000;
+    wire [3:0] half_mask = mem_offset[1] ? 4'b1100 : 4'b0011;
+
+    assign o_dmem_mask = (funct3[1:0] == 2'b00) ? byte_mask :
+                         (funct3[1:0] == 2'b01) ? half_mask :
+                                                  4'b1111;
+
+    wire [31:0] sb_wdata = (mem_offset == 2'b00) ? {24'b0, rs2_rdata[ 7:0]        } :
+                           (mem_offset == 2'b01) ? {16'b0, rs2_rdata[ 7:0],  8'b0 } :
+                           (mem_offset == 2'b10) ? { 8'b0, rs2_rdata[ 7:0], 16'b0 } :
+                                                   {       rs2_rdata[ 7:0], 24'b0 };
+    wire [31:0] sh_wdata = mem_offset[1] ? {rs2_rdata[15:0], 16'b0}
+                                         : rs2_rdata;
+
+    assign o_dmem_wdata = (funct3[1:0] == 2'b00) ? sb_wdata :
+                          (funct3[1:0] == 2'b01) ? sh_wdata :
+                                                   rs2_rdata;
+
+    // Sign/zero extension module
+    wire [31:0] dmem_ext;
+    sign_zero_ext sext (
+        .i_dmem_rdata (i_dmem_rdata),
+        .i_funct3     (funct3),
+        .i_byte_offset(mem_offset),
+        .o_dmem_ext   (dmem_ext)
+    );
+
+    wire [31:0] mux_mem_to_reg;
+    assign mux_mem_to_reg = ctrl_mem_to_reg ? dmem_ext : alu_result;
+
+    wire [31:0] mux_jump_type;
+    assign mux_jump_type = ctrl_i_type_jmp ? pc_plus_4 : mux_mem_to_reg;
+
+    wire [31:0] mux_lui_en;
+    assign mux_lui_en = ctrl_i_type_lui ? immediate : pc_plus_imm;
+
+    assign rd_wdata = ctrl_i_type_unsigned ? mux_lui_en : mux_jump_type;
+
+    // =========================================================================
+    // RETIRE INTERFACE
+    // =========================================================================
+    assign o_retire_valid = 1'b1;
+
+    assign o_retire_inst = instruction;
+
+    wire is_ebreak = (instruction[6:0]  == 7'b1110011) &
+                     (instruction[14:12] == 3'b000)     &
+                     (instruction[31:20] == 12'b000000000001);
+    assign o_retire_halt = is_ebreak;
+
+    assign o_retire_trap = 1'b0;
+    assign o_retire_rs1_raddr = instruction[19:15];
+    assign o_retire_rs1_rdata = rs1_rdata;
+    assign o_retire_rs2_raddr = instruction[24:20];
+    assign o_retire_rs2_rdata = rs2_rdata;
+    assign o_retire_rd_waddr = ctrl_rd_wen ? instruction[11:7] : 5'd0;
+    assign o_retire_rd_wdata = rd_wdata;
+    assign o_retire_pc      = pc;
+    assign o_retire_next_pc = next_pc;
+
 endmodule
 
 `default_nettype wire
