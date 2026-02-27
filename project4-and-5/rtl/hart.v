@@ -130,14 +130,14 @@ module hart #(
     ,`RVFI_OUTPUTS,
 `endif
 );
-
-    // Fill in your implementation here.
-
     // =========================================================================
     // PROGRAM COUNTER
     // =========================================================================
     reg [31:0] pc;
     wire [31:0] next_pc;
+    wire[31:0] pc_plus_4;
+    
+    assign pc_plus_4 = pc + 32'd4;
 
     always @(posedge i_clk) begin
         if (i_rst)
@@ -155,12 +155,31 @@ module hart #(
 
     assign o_imem_raddr = pc;
     assign instruction = i_imem_rdata;
-    
+
+    // =========================================================================
+    // IF/ID Pipeline Register
+    // =========================================================================
+    reg [31:0] IF_ID_pc;
+    reg [31:0] IF_ID_instruction;
+    reg [31:0] IF_ID_pc_plus_4;
+
+    always @(posedge i_clk) begin
+        if (i_rst) begin
+            IF_ID_pc <= RESET_ADDR;
+            IF_ID_instruction <= 32'b0;
+            IF_ID_pc_plus_4 <= RESET_ADDR;
+        end else begin
+            IF_ID_pc <= pc;
+            IF_ID_instruction <= instruction;
+            IF_ID_pc_plus_4 <= pc_plus_4;
+        end
+    end
+
     // =========================================================================
     // DECODE LOGIC
     // =========================================================================
-    assign funct3 = instruction[14:12];
-    assign funct7 = instruction[31:25];
+    assign funct3 = IF_ID_instruction[14:12];
+    assign funct7 = IF_ID_instruction[31:25];
 
     // Control unit wires
     wire [5:0] ctrl_imm_fmt;
@@ -176,7 +195,7 @@ module hart #(
     wire       ctrl_i_type_jmp;
 
     control ctrl_unit(
-        .i_opcode    (instruction[6:0]),
+        .i_opcode    (IF_ID_instruction[6:0]),
         .o_imm_fmt   (ctrl_imm_fmt),
         .o_rd_wen    (ctrl_rd_wen),
         .o_lui_en    (ctrl_i_type_lui),
@@ -196,7 +215,7 @@ module hart #(
     wire [31:0] immediate;
 
     imm imm_decoder (
-        .i_inst     (instruction),
+        .i_inst     (IF_ID_instruction),
         .i_format   (ctrl_imm_fmt),
         .o_immediate(immediate)
     );
@@ -211,14 +230,82 @@ module hart #(
     rf #(.BYPASS_EN(0)) regfile (
         .i_clk      (i_clk),
         .i_rst      (i_rst),
-        .i_rs1_raddr(instruction[19:15]),
+        .i_rs1_raddr(IF_ID_instruction[19:15]),
         .o_rs1_rdata(rs1_rdata),
-        .i_rs2_raddr(instruction[24:20]),
+        .i_rs2_raddr(IF_ID_instruction[24:20]),
         .o_rs2_rdata(rs2_rdata),
         .i_rd_wen   (ctrl_rd_wen),
-        .i_rd_waddr (instruction[11:7]),
+        .i_rd_waddr (IF_ID_instruction[11:7]),
         .i_rd_wdata (rd_wdata)
     );
+
+    // =========================================================================
+    // ID/EX Pipeline Register
+    // =========================================================================
+    reg [31:0] ID_EX_pc;
+    reg [31:0] ID_EX_instruction;
+    reg [31:0] ID_EX_pc_plus_4;
+    reg [31:0] ID_EX_rs1_rdata;
+    reg [31:0] ID_EX_rs2_rdata;
+    reg [31:0] ID_EX_immediate;
+    reg [4:0] ID_EX_rs1_raddr;
+    reg [4:0] ID_EX_rs2_raddr;
+    reg [4:0] ID_EX_rd_waddr;
+    reg ID_EX_ctrl_rd_wen;
+    reg ID_EX_ctrl_i_type_lui;
+    reg ID_EX_ctrl_i_type_unsigned;
+    reg ID_EX_ctrl_alu_imm;
+    reg ID_EX_ctrl_dmem_ren;
+    reg ID_EX_ctrl_dmem_wen;
+    reg ID_EX_ctrl_mem_to_reg;
+    reg ID_EX_ctrl_branch_en;
+    reg ID_EX_ctrl_jump_sel;
+    reg ID_EX_ctrl_i_type_jmp;
+
+    always @(posedge i_clk) begin
+        if (i_rst) begin
+            ID_EX_pc <= RESET_ADDR;
+            ID_EX_instruction <= 32'b0;
+            ID_EX_pc_plus_4 <= RESET_ADDR;
+            ID_EX_rs1_rdata <= 32'b0;
+            ID_EX_rs2_rdata <= 32'b0;
+            ID_EX_immediate <= 32'b0;
+            ID_EX_rs1_raddr <= 5'b0;
+            ID_EX_rs2_raddr <= 5'b0;
+            ID_EX_rd_waddr <= 5'b0;
+            ID_EX_ctrl_rd_wen <= 1'b0;
+            ID_EX_ctrl_i_type_lui <= 1'b0;
+            ID_EX_ctrl_i_type_unsigned <= 1'b0;
+            ID_EX_ctrl_alu_imm <= 1'b0;
+            ID_EX_ctrl_dmem_ren <= 1'b0;
+            ID_EX_ctrl_dmem_wen <= 1'b0;
+            ID_EX_ctrl_mem_to_reg <= 1'b0;
+            ID_EX_ctrl_branch_en <= 1'b0;
+            ID_EX_ctrl_jump_sel <= 1'b0;
+            ID_EX_ctrl_i_type_jmp <= 1'b0;
+        end else begin
+            ID_EX_pc <= IF_ID_pc;
+            ID_EX_instruction <= IF_ID_instruction;
+            ID_EX_pc_plus_4 <= IF_ID_pc_plus_4;
+            ID_EX_rs1_rdata <= rs1_rdata;
+            ID_EX_rs2_rdata <= rs2_rdata;
+            ID_EX_immediate <= immediate;
+            ID_EX_rs1_raddr <= IF_ID_instruction[19:15];
+            ID_EX_rs2_raddr <= IF_ID_instruction[24:20];
+            ID_EX_rd_waddr <= IF_ID_instruction[11:7];
+            ID_EX_ctrl_rd_wen <= ctrl_rd_wen;
+            ID_EX_ctrl_i_type_lui <= ctrl_i_type_lui;
+            ID_EX_ctrl_i_type_unsigned <= ctrl_i_type_unsigned;
+            ID_EX_ctrl_alu_imm <= ctrl_alu_imm;
+            ID_EX_ctrl_dmem_ren <= ctrl_dmem_ren;
+            ID_EX_ctrl_dmem_wen <= ctrl_dmem_wen;
+            ID_EX_ctrl_mem_to_reg <= ctrl_mem_to_reg;
+            ID_EX_ctrl_branch_en <= ctrl_branch_en;
+            ID_EX_ctrl_jump_sel <= ctrl_jump_sel;
+            ID_EX_ctrl_i_type_jmp <= ctrl_i_type_jmp;
+        end
+    end
+        
 
     // =========================================================================
     // ALU / EXECUTE LOGIC
@@ -228,14 +315,14 @@ module hart #(
     wire        alu_eq;
     wire        alu_slt;
 
-    assign alu_op2 = ctrl_alu_imm ? immediate : rs2_rdata;
+    assign alu_op2 = ID_EX_ctrl_alu_imm ? ID_EX_immediate : ID_EX_rs2_rdata;
 
     alu alu_inst (
-        .i_opsel   ((ctrl_dmem_ren | ctrl_dmem_wen) ? 3'b000 : funct3),
-        .i_sub     (~ctrl_alu_imm & funct7[5]),
-        .i_unsigned(funct3[0]),
-        .i_arith   (funct7[5]),
-        .i_op1     (rs1_rdata),
+        .i_opsel   ((ID_EX_ctrl_dmem_ren | ID_EX_ctrl_dmem_wen) ? 3'b000 : ID_EX_instruction[14:12]),
+        .i_sub     (~ID_EX_ctrl_alu_imm & ID_EX_instruction[30]),
+        .i_unsigned(ID_EX_instruction[12]),
+        .i_arith   (ID_EX_instruction[30]),
+        .i_op1     (ID_EX_rs1_rdata),
         .i_op2     (alu_op2),
         .o_result  (alu_result),
         .o_eq      (alu_eq),
@@ -248,35 +335,36 @@ module hart #(
     wire branch_result;
 
     branch_logic branch_logic_inst (
-        .i_funct3   (funct3),
+        .i_funct3   (ID_EX_instruction[14:12]),
         .i_eq       (alu_eq),
         .i_slt      (alu_slt),
-        .i_branch_en(ctrl_branch_en),
+        .i_branch_en(ID_EX_ctrl_branch_en),
         .o_branch   (branch_result)
     );
 
     // =========================================================================
     // UPDATE PC LOGIC / JUMP LOGIC
     // =========================================================================
-    wire[31:0] pc_plus_4;
-    assign pc_plus_4 = pc + 32'd4;
-
     wire [31:0] pc_plus_imm;
-    assign pc_plus_imm = pc + immediate;
+    assign pc_plus_imm = ID_EX_pc + ID_EX_immediate;
 
     wire [31:0] jalr_target;
     assign jalr_target = alu_result & 32'hfffffffe;
 
     wire [31:0] mux_jump_select;
-    assign mux_jump_select = ctrl_jump_sel ? pc_plus_imm : jalr_target;
+    assign mux_jump_select = ID_EX_ctrl_jump_sel ? pc_plus_imm : jalr_target;
 
-    wire [31:0] mux_jump_or_branch;
-    assign mux_jump_or_branch = branch_result ? pc_plus_imm : pc_plus_4;
+    wire [31:0] mux_pc_plus_4_or_branch;
+    assign mux_pc_plus_4_or_branch = branch_result ? pc_plus_imm : pc_plus_4;
 
     assign next_pc = ctrl_i_type_jmp ? mux_jump_select : mux_jump_or_branch;
 
     // =========================================================================
-    // MEMORY / WRITEBACK LOGIC
+    // EX/MEM Pipeline Register
+    // =========================================================================
+
+    // =========================================================================
+    // MEMORY LOGIC
     // =========================================================================
     wire [31:0] mem_addr   = alu_result;
     wire [1:0]  mem_offset = mem_addr[1:0];
@@ -316,6 +404,14 @@ module hart #(
         .o_dmem_ext   (dmem_ext)
     );
 
+    // =========================================================================
+    // MEM/WB Pipeline Register
+    // =========================================================================
+
+
+    // =========================================================================
+    // WRITEBACK LOGIC
+    // =========================================================================
     wire [31:0] mux_mem_to_reg;
     assign mux_mem_to_reg = ctrl_mem_to_reg ? dmem_ext : alu_result;
 
