@@ -150,8 +150,6 @@ module hart #(
     // INSTRUCTION FETCH
     // =========================================================================
     wire [31:0] instruction;
-    wire [2:0] funct3;
-    wire [6:0] funct7;
 
     assign o_imem_raddr = pc;
     assign instruction = i_imem_rdata;
@@ -178,9 +176,6 @@ module hart #(
     // =========================================================================
     // DECODE LOGIC
     // =========================================================================
-    assign funct3 = IF_ID_instruction[14:12];
-    assign funct7 = IF_ID_instruction[31:25];
-
     // Control unit wires
     wire [5:0] ctrl_imm_fmt;
     wire       ctrl_rd_wen;
@@ -227,21 +222,22 @@ module hart #(
     wire [31:0] rs2_rdata;
     wire [31:0] rd_wdata;
 
-    rf #(.BYPASS_EN(0)) regfile (
+    rf #(.BYPASS_EN(1)) regfile (
         .i_clk      (i_clk),
         .i_rst      (i_rst),
         .i_rs1_raddr(IF_ID_instruction[19:15]),
         .o_rs1_rdata(rs1_rdata),
         .i_rs2_raddr(IF_ID_instruction[24:20]),
         .o_rs2_rdata(rs2_rdata),
-        .i_rd_wen   (ctrl_rd_wen),
-        .i_rd_waddr (IF_ID_instruction[11:7]),
+        .i_rd_wen   (MEM_WB_ctrl_rd_wen),
+        .i_rd_waddr (MEM_WB_rd_waddr),
         .i_rd_wdata (rd_wdata)
     );
 
     // =========================================================================
     // ID/EX Pipeline Register
     // =========================================================================
+    // data signals
     reg [31:0] ID_EX_pc;
     reg [31:0] ID_EX_instruction;
     reg [31:0] ID_EX_pc_plus_4;
@@ -251,6 +247,8 @@ module hart #(
     reg [4:0] ID_EX_rs1_raddr;
     reg [4:0] ID_EX_rs2_raddr;
     reg [4:0] ID_EX_rd_waddr;
+
+    // control signals
     reg ID_EX_ctrl_rd_wen;
     reg ID_EX_ctrl_i_type_lui;
     reg ID_EX_ctrl_i_type_unsigned;
@@ -357,22 +355,88 @@ module hart #(
     wire [31:0] mux_pc_plus_4_or_branch;
     assign mux_pc_plus_4_or_branch = branch_result ? pc_plus_imm : pc_plus_4;
 
-    assign next_pc = ctrl_i_type_jmp ? mux_jump_select : mux_jump_or_branch;
+    assign next_pc = ID_EX_ctrl_i_type_jmp ? mux_jump_select : mux_pc_plus_4_or_branch;
 
     // =========================================================================
     // EX/MEM Pipeline Register
     // =========================================================================
+    // data signals
+    reg [31:0] EX_MEM_pc;
+    reg [31:0] EX_MEM_instruction;
+    reg [31:0] EX_MEM_pc_plus_4;
+    reg [31:0] EX_MEM_pc_plus_imm;
+    reg [31:0] EX_MEM_next_pc;
+    reg [31:0] EX_MEM_immediate;
+    reg [31:0] EX_MEM_alu_result;
+    reg [31:0] EX_MEM_rs2_rdata;
+    reg [31:0] EX_MEM_rs1_rdata;    
+    reg [4:0] EX_MEM_rs1_raddr;
+    reg [4:0] EX_MEM_rs2_raddr;
+    reg [4:0] EX_MEM_rd_waddr;
+
+    // control signals
+    reg EX_MEM_ctrl_rd_wen;
+    reg EX_MEM_ctrl_dmem_ren;
+    reg EX_MEM_ctrl_dmem_wen;
+    reg EX_MEM_ctrl_mem_to_reg;
+    reg EX_MEM_ctrl_i_type_jmp;
+    reg EX_MEM_ctrl_i_type_lui;
+    reg EX_MEM_ctrl_i_type_unsigned;
+
+    always @(posedge i_clk) begin
+        if (i_rst) begin
+            EX_MEM_pc <= RESET_ADDR;
+            EX_MEM_instruction <= 32'b0;
+            EX_MEM_pc_plus_4 <= RESET_ADDR;
+            EX_MEM_pc_plus_imm <= 32'b0;
+            EX_MEM_next_pc <= RESET_ADDR;
+            EX_MEM_immediate <= 32'b0;
+            EX_MEM_alu_result <= 32'b0;
+            EX_MEM_rs2_rdata <= 32'b0;
+            EX_MEM_rs1_rdata <= 32'b0;
+            EX_MEM_rs1_raddr <= 5'b0;
+            EX_MEM_rs2_raddr <= 5'b0;
+            EX_MEM_rd_waddr <= 5'b0;
+            EX_MEM_ctrl_rd_wen <= 1'b0;
+            EX_MEM_ctrl_dmem_ren <= 1'b0;
+            EX_MEM_ctrl_dmem_wen <= 1'b0;
+            EX_MEM_ctrl_mem_to_reg <= 1'b0;
+            EX_MEM_ctrl_i_type_jmp <= 1'b0;
+            EX_MEM_ctrl_i_type_lui <= 1'b0;
+            EX_MEM_ctrl_i_type_unsigned <= 1'b0;
+        end else begin
+            EX_MEM_pc <= ID_EX_pc;
+            EX_MEM_instruction <= ID_EX_instruction;
+            EX_MEM_pc_plus_4 <= ID_EX_pc_plus_4;
+            EX_MEM_pc_plus_imm <= pc_plus_imm;
+            EX_MEM_next_pc <= next_pc;
+            EX_MEM_immediate <= ID_EX_immediate;
+            EX_MEM_alu_result <= alu_result;
+            EX_MEM_rs2_rdata <= ID_EX_rs2_rdata;
+            EX_MEM_rs1_rdata <= ID_EX_rs1_rdata;
+            EX_MEM_rs1_raddr <= ID_EX_rs1_raddr;
+            EX_MEM_rs2_raddr <= ID_EX_rs2_raddr;
+            EX_MEM_rd_waddr <= ID_EX_rd_waddr;
+            EX_MEM_ctrl_rd_wen <= ID_EX_ctrl_rd_wen;
+            EX_MEM_ctrl_dmem_ren <= ID_EX_ctrl_dmem_ren;
+            EX_MEM_ctrl_dmem_wen <= ID_EX_ctrl_dmem_wen;
+            EX_MEM_ctrl_mem_to_reg <= ID_EX_ctrl_mem_to_reg;
+            EX_MEM_ctrl_i_type_jmp <= ID_EX_ctrl_i_type_jmp;
+            EX_MEM_ctrl_i_type_lui <= ID_EX_ctrl_i_type_lui;
+            EX_MEM_ctrl_i_type_unsigned <= ID_EX_ctrl_i_type_unsigned;
+        end
+    end
 
     // =========================================================================
     // MEMORY LOGIC
     // =========================================================================
-    wire [31:0] mem_addr   = alu_result;
+    wire [31:0] mem_addr   = EX_MEM_alu_result;
     wire [1:0]  mem_offset = mem_addr[1:0];
 
     assign o_dmem_addr = {mem_addr[31:2], 2'b00};
 
-    assign o_dmem_ren = ctrl_dmem_ren;
-    assign o_dmem_wen = ctrl_dmem_wen;
+    assign o_dmem_ren = EX_MEM_ctrl_dmem_ren;
+    assign o_dmem_wen = EX_MEM_ctrl_dmem_wen;
 
     wire [3:0] byte_mask = (mem_offset == 2'b00) ? 4'b0001 :
                            (mem_offset == 2'b01) ? 4'b0010 :
@@ -380,26 +444,26 @@ module hart #(
                                                    4'b1000;
     wire [3:0] half_mask = mem_offset[1] ? 4'b1100 : 4'b0011;
 
-    assign o_dmem_mask = (funct3[1:0] == 2'b00) ? byte_mask :
-                         (funct3[1:0] == 2'b01) ? half_mask :
-                                                  4'b1111;
+    assign o_dmem_mask = (EX_MEM_instruction[13:12] == 2'b00) ? byte_mask :
+                         (EX_MEM_instruction[13:12] == 2'b01) ? half_mask :
+                                                                 4'b1111;
 
-    wire [31:0] sb_wdata = (mem_offset == 2'b00) ? {24'b0, rs2_rdata[ 7:0]        } :
-                           (mem_offset == 2'b01) ? {16'b0, rs2_rdata[ 7:0],  8'b0 } :
-                           (mem_offset == 2'b10) ? { 8'b0, rs2_rdata[ 7:0], 16'b0 } :
-                                                   {       rs2_rdata[ 7:0], 24'b0 };
-    wire [31:0] sh_wdata = mem_offset[1] ? {rs2_rdata[15:0], 16'b0}
-                                         : rs2_rdata;
+    wire [31:0] sb_wdata = (mem_offset == 2'b00) ? {24'b0, EX_MEM_rs2_rdata[ 7:0]        } :
+                           (mem_offset == 2'b01) ? {16'b0, EX_MEM_rs2_rdata[ 7:0],  8'b0 } :
+                           (mem_offset == 2'b10) ? { 8'b0, EX_MEM_rs2_rdata[ 7:0], 16'b0 } :
+                                                   {       EX_MEM_rs2_rdata[ 7:0], 24'b0 };
+    wire [31:0] sh_wdata = mem_offset[1] ? {EX_MEM_rs2_rdata[15:0], 16'b0}
+                                         : EX_MEM_rs2_rdata;
 
-    assign o_dmem_wdata = (funct3[1:0] == 2'b00) ? sb_wdata :
-                          (funct3[1:0] == 2'b01) ? sh_wdata :
-                                                   rs2_rdata;
+    assign o_dmem_wdata = (EX_MEM_instruction[13:12] == 2'b00) ? sb_wdata :
+                          (EX_MEM_instruction[13:12] == 2'b01) ? sh_wdata :
+                                                                  EX_MEM_rs2_rdata;
 
     // Sign/zero extension module
     wire [31:0] dmem_ext;
     sign_zero_ext sext (
         .i_dmem_rdata (i_dmem_rdata),
-        .i_funct3     (funct3),
+        .i_funct3     (EX_MEM_instruction[14:12]),
         .i_byte_offset(mem_offset),
         .o_dmem_ext   (dmem_ext)
     );
@@ -407,43 +471,105 @@ module hart #(
     // =========================================================================
     // MEM/WB Pipeline Register
     // =========================================================================
+    // data signals
+    reg [31:0] MEM_WB_pc;
+    reg [31:0] MEM_WB_instruction;
+    reg [31:0] MEM_WB_pc_plus_4;
+    reg [31:0] MEM_WB_pc_plus_imm;
+    reg [31:0] MEM_WB_next_pc;
+    reg [31:0] MEM_WB_immediate;
+    reg [31:0] MEM_WB_alu_result;
+    reg [31:0] MEM_WB_dmem_ext;
+    reg [31:0] MEM_WB_rs1_rdata;
+    reg [31:0] MEM_WB_rs2_rdata;  
+    reg [4:0] MEM_WB_rs1_raddr;
+    reg [4:0] MEM_WB_rs2_raddr;
+    reg [4:0] MEM_WB_rd_waddr;
 
+    // control signals
+    reg MEM_WB_ctrl_rd_wen;
+    reg MEM_WB_ctrl_mem_to_reg;
+    reg MEM_WB_ctrl_i_type_jmp;
+    reg MEM_WB_ctrl_i_type_lui;
+    reg MEM_WB_ctrl_i_type_unsigned;
+
+    always @(posedge i_clk) begin
+        if (i_rst) begin
+            MEM_WB_pc <= RESET_ADDR;
+            MEM_WB_instruction <= 32'b0;
+            MEM_WB_pc_plus_4 <= RESET_ADDR;
+            MEM_WB_pc_plus_imm <= 32'b0;
+            MEM_WB_next_pc <= RESET_ADDR;
+            MEM_WB_immediate <= 32'b0;
+            MEM_WB_alu_result <= 32'b0;
+            MEM_WB_dmem_ext <= 32'b0;
+            MEM_WB_rs1_rdata <= 32'b0;
+            MEM_WB_rs2_rdata <= 32'b0;
+            MEM_WB_rs1_raddr <= 5'b0;
+            MEM_WB_rs2_raddr <= 5'b0;
+            MEM_WB_rd_waddr <= 5'b0;
+            MEM_WB_ctrl_rd_wen <= 1'b0;
+            MEM_WB_ctrl_mem_to_reg <= 1'b0;
+            MEM_WB_ctrl_i_type_jmp <= 1'b0;
+            MEM_WB_ctrl_i_type_lui <= 1'b0;
+            MEM_WB_ctrl_i_type_unsigned <= 1'b0;
+        end else begin
+            MEM_WB_pc <= EX_MEM_pc;
+            MEM_WB_instruction <= EX_MEM_instruction;
+            MEM_WB_pc_plus_4 <= EX_MEM_pc_plus_4;
+            MEM_WB_pc_plus_imm <= EX_MEM_pc_plus_imm;
+            MEM_WB_next_pc <= EX_MEM_next_pc;
+            MEM_WB_immediate <= EX_MEM_immediate;
+            MEM_WB_alu_result <= EX_MEM_alu_result;
+            MEM_WB_dmem_ext <= dmem_ext;
+            MEM_WB_rs1_rdata <= EX_MEM_rs1_rdata;
+            MEM_WB_rs2_rdata <= EX_MEM_rs2_rdata;
+            MEM_WB_rs1_raddr <= EX_MEM_rs1_raddr;
+            MEM_WB_rs2_raddr <= EX_MEM_rs2_raddr;
+            MEM_WB_rd_waddr <= EX_MEM_rd_waddr;
+            MEM_WB_ctrl_rd_wen <= EX_MEM_ctrl_rd_wen;
+            MEM_WB_ctrl_mem_to_reg <= EX_MEM_ctrl_mem_to_reg;
+            MEM_WB_ctrl_i_type_jmp <= EX_MEM_ctrl_i_type_jmp;
+            MEM_WB_ctrl_i_type_lui <= EX_MEM_ctrl_i_type_lui;
+            MEM_WB_ctrl_i_type_unsigned <= EX_MEM_ctrl_i_type_unsigned;
+        end
+    end
 
     // =========================================================================
     // WRITEBACK LOGIC
     // =========================================================================
     wire [31:0] mux_mem_to_reg;
-    assign mux_mem_to_reg = ctrl_mem_to_reg ? dmem_ext : alu_result;
+    assign mux_mem_to_reg = MEM_WB_ctrl_mem_to_reg ? MEM_WB_dmem_ext : MEM_WB_alu_result;
 
     wire [31:0] mux_jump_type;
-    assign mux_jump_type = ctrl_i_type_jmp ? pc_plus_4 : mux_mem_to_reg;
+    assign mux_jump_type = MEM_WB_ctrl_i_type_jmp ? MEM_WB_pc_plus_4 : mux_mem_to_reg;
 
     wire [31:0] mux_lui_en;
-    assign mux_lui_en = ctrl_i_type_lui ? immediate : pc_plus_imm;
+    assign mux_lui_en = MEM_WB_ctrl_i_type_lui ? MEM_WB_immediate : MEM_WB_pc_plus_imm;
 
-    assign rd_wdata = ctrl_i_type_unsigned ? mux_lui_en : mux_jump_type;
+    assign rd_wdata = MEM_WB_ctrl_i_type_unsigned ? mux_lui_en : mux_jump_type;
 
     // =========================================================================
     // RETIRE INTERFACE
     // =========================================================================
     assign o_retire_valid = 1'b1;
 
-    assign o_retire_inst = instruction;
+    assign o_retire_inst = MEM_WB_instruction;
 
-    wire is_ebreak = (instruction[6:0]  == 7'b1110011) &
-                     (instruction[14:12] == 3'b000)     &
-                     (instruction[31:20] == 12'b000000000001);
+    wire is_ebreak = (MEM_WB_instruction[6:0]  == 7'b1110011) &
+                     (MEM_WB_instruction[14:12] == 3'b000)     &
+                     (MEM_WB_instruction[31:20] == 12'b000000000001);
     assign o_retire_halt = is_ebreak;
 
     assign o_retire_trap = 1'b0;
-    assign o_retire_rs1_raddr = instruction[19:15];
-    assign o_retire_rs1_rdata = rs1_rdata;
-    assign o_retire_rs2_raddr = instruction[24:20];
-    assign o_retire_rs2_rdata = rs2_rdata;
-    assign o_retire_rd_waddr = ctrl_rd_wen ? instruction[11:7] : 5'd0;
+    assign o_retire_rs1_raddr = MEM_WB_rs1_raddr;
+    assign o_retire_rs1_rdata = MEM_WB_rs1_rdata;
+    assign o_retire_rs2_raddr = MEM_WB_rs2_raddr;
+    assign o_retire_rs2_rdata = MEM_WB_rs2_rdata;
+    assign o_retire_rd_waddr = MEM_WB_ctrl_rd_wen ? MEM_WB_rd_waddr : 5'd0;
     assign o_retire_rd_wdata = rd_wdata;
-    assign o_retire_pc      = pc;
-    assign o_retire_next_pc = next_pc;
+    assign o_retire_pc      = MEM_WB_pc;
+    assign o_retire_next_pc = MEM_WB_next_pc;
 
 endmodule
 
