@@ -318,6 +318,21 @@ module hart #(
         
 
     // =========================================================================
+    // HAZARD DETECTION UNIT
+    // =========================================================================
+    wire stall;
+
+    hdu hdu_inst (
+        .i_id_rs1    (IF_ID_instruction[19:15]),
+        .i_id_rs2    (IF_ID_instruction[24:20]),
+        .i_ex_rd_wen (ID_EX_ctrl_rd_wen),
+        .i_ex_rd_waddr(ID_EX_rd_waddr),
+        .i_mem_rd_wen(EX_MEM_ctrl_rd_wen),
+        .i_mem_rd_waddr(EX_MEM_rd_waddr),
+        .o_stall     (stall)
+    );
+
+    // =========================================================================
     // ALU / EXECUTE LOGIC
     // =========================================================================
     wire [31:0] alu_op2;

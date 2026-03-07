@@ -9,3 +9,4 @@
 # Assembled test outputs
 **/tests/asm/*.hex
 **/tests/asm/*.o
+**/tests/asm/*.asm
