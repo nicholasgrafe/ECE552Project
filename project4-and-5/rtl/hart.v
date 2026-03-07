@@ -124,7 +124,19 @@ module hart #(
     // the next program counter after the instruction is retired. For most
     // instructions, this is `o_retire_pc + 4`, but must be the branch or jump
     // target for *taken* branches and jumps.
-    output wire [31:0] o_retire_next_pc
+    output wire [31:0] o_retire_next_pc,
+    // Data memory address accessed by the retiring instruction (aligned).
+    output wire [31:0] o_retire_dmem_addr,
+    // Data memory read enable for the retiring instruction.
+    output wire        o_retire_dmem_ren,
+    // Data memory write enable for the retiring instruction.
+    output wire        o_retire_dmem_wen,
+    // Data memory byte mask for the retiring instruction.
+    output wire [ 3:0] o_retire_dmem_mask,
+    // Data memory write data for the retiring instruction.
+    output wire [31:0] o_retire_dmem_wdata,
+    // Data memory read data (raw) for the retiring instruction.
+    output wire [31:0] o_retire_dmem_rdata
 
 `ifdef RISCV_FORMAL
     ,`RVFI_OUTPUTS,
@@ -492,6 +504,14 @@ module hart #(
     reg MEM_WB_ctrl_i_type_jmp;
     reg MEM_WB_ctrl_i_type_lui;
     reg MEM_WB_ctrl_i_type_unsigned;
+    reg MEM_WB_ctrl_dmem_ren;
+    reg MEM_WB_ctrl_dmem_wen;
+
+    // dmem retire signals
+    reg [31:0] MEM_WB_dmem_addr;
+    reg [3:0] MEM_WB_dmem_mask;
+    reg [31:0] MEM_WB_dmem_wdata;
+    reg [31:0] MEM_WB_dmem_rdata;
 
     always @(posedge i_clk) begin
         if (i_rst) begin
@@ -513,6 +533,12 @@ module hart #(
             MEM_WB_ctrl_i_type_jmp <= 1'b0;
             MEM_WB_ctrl_i_type_lui <= 1'b0;
             MEM_WB_ctrl_i_type_unsigned <= 1'b0;
+            MEM_WB_ctrl_dmem_ren <= 1'b0;
+            MEM_WB_ctrl_dmem_wen <= 1'b0;
+            MEM_WB_dmem_addr <= 32'b0;
+            MEM_WB_dmem_mask <= 4'b0;
+            MEM_WB_dmem_wdata <= 32'b0;
+            MEM_WB_dmem_rdata <= 32'b0;
         end else begin
             MEM_WB_pc <= EX_MEM_pc;
             MEM_WB_instruction <= EX_MEM_instruction;
@@ -532,6 +558,12 @@ module hart #(
             MEM_WB_ctrl_i_type_jmp <= EX_MEM_ctrl_i_type_jmp;
             MEM_WB_ctrl_i_type_lui <= EX_MEM_ctrl_i_type_lui;
             MEM_WB_ctrl_i_type_unsigned <= EX_MEM_ctrl_i_type_unsigned;
+            MEM_WB_ctrl_dmem_ren <= EX_MEM_ctrl_dmem_ren;
+            MEM_WB_ctrl_dmem_wen <= EX_MEM_ctrl_dmem_wen;
+            MEM_WB_dmem_addr <= o_dmem_addr;
+            MEM_WB_dmem_mask <= o_dmem_mask;
+            MEM_WB_dmem_wdata <= o_dmem_wdata;
+            MEM_WB_dmem_rdata <= i_dmem_rdata;
         end
     end
 
@@ -568,8 +600,14 @@ module hart #(
     assign o_retire_rs2_rdata = MEM_WB_rs2_rdata;
     assign o_retire_rd_waddr = MEM_WB_ctrl_rd_wen ? MEM_WB_rd_waddr : 5'd0;
     assign o_retire_rd_wdata = rd_wdata;
-    assign o_retire_pc      = MEM_WB_pc;
-    assign o_retire_next_pc = MEM_WB_next_pc;
+    assign o_retire_pc        = MEM_WB_pc;
+    assign o_retire_next_pc   = MEM_WB_next_pc;
+    assign o_retire_dmem_addr = MEM_WB_dmem_addr;
+    assign o_retire_dmem_ren  = MEM_WB_ctrl_dmem_ren;
+    assign o_retire_dmem_wen  = MEM_WB_ctrl_dmem_wen;
+    assign o_retire_dmem_mask = MEM_WB_dmem_mask;
+    assign o_retire_dmem_wdata= MEM_WB_dmem_wdata;
+    assign o_retire_dmem_rdata= MEM_WB_dmem_rdata;
 
 endmodule
 
