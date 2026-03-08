@@ -145,6 +145,15 @@ module hart #(
     // =========================================================================
     // PROGRAM COUNTER
     // =========================================================================
+    wire stall; // declared here; driven by HDU instantiated below
+    wire flush; // asserted when branch/jump resolves in EX; driven after branch_logic
+
+    // Forward declarations: used in regfile/HDU before their pipeline register sections
+    reg        MEM_WB_ctrl_rd_wen;
+    reg [ 4:0] MEM_WB_rd_waddr;
+    reg        EX_MEM_ctrl_rd_wen;
+    reg [ 4:0] EX_MEM_rd_waddr;
+
     reg [31:0] pc;
     wire [31:0] next_pc;
     wire[31:0] pc_plus_4;
@@ -154,7 +163,7 @@ module hart #(
     always @(posedge i_clk) begin
         if (i_rst)
             pc <= RESET_ADDR;
-        else
+        else if (flush | !stall)
             pc <= next_pc;
     end
 
@@ -169,16 +178,19 @@ module hart #(
     // =========================================================================
     // IF/ID Pipeline Register
     // =========================================================================
+    reg        IF_ID_valid;
     reg [31:0] IF_ID_pc;
     reg [31:0] IF_ID_instruction;
     reg [31:0] IF_ID_pc_plus_4;
 
     always @(posedge i_clk) begin
-        if (i_rst) begin
+        if (i_rst | flush) begin
+            IF_ID_valid <= 1'b0;
             IF_ID_pc <= RESET_ADDR;
             IF_ID_instruction <= 32'b0;
             IF_ID_pc_plus_4 <= RESET_ADDR;
-        end else begin
+        end else if (!stall) begin
+            IF_ID_valid <= 1'b1;
             IF_ID_pc <= pc;
             IF_ID_instruction <= instruction;
             IF_ID_pc_plus_4 <= pc_plus_4;
@@ -261,6 +273,7 @@ module hart #(
     reg [4:0] ID_EX_rd_waddr;
 
     // control signals
+    reg ID_EX_valid;
     reg ID_EX_ctrl_rd_wen;
     reg ID_EX_ctrl_i_type_lui;
     reg ID_EX_ctrl_i_type_unsigned;
@@ -274,6 +287,7 @@ module hart #(
 
     always @(posedge i_clk) begin
         if (i_rst) begin
+            ID_EX_valid <= 1'b0;
             ID_EX_pc <= RESET_ADDR;
             ID_EX_instruction <= 32'b0;
             ID_EX_pc_plus_4 <= RESET_ADDR;
@@ -293,7 +307,20 @@ module hart #(
             ID_EX_ctrl_branch_en <= 1'b0;
             ID_EX_ctrl_jump_sel <= 1'b0;
             ID_EX_ctrl_i_type_jmp <= 1'b0;
+        end else if (flush | stall) begin
+            ID_EX_valid <= 1'b0;
+            ID_EX_ctrl_rd_wen <= 1'b0;
+            ID_EX_ctrl_i_type_lui <= 1'b0;
+            ID_EX_ctrl_i_type_unsigned <= 1'b0;
+            ID_EX_ctrl_alu_imm <= 1'b0;
+            ID_EX_ctrl_dmem_ren <= 1'b0;
+            ID_EX_ctrl_dmem_wen <= 1'b0;
+            ID_EX_ctrl_mem_to_reg <= 1'b0;
+            ID_EX_ctrl_branch_en <= 1'b0;
+            ID_EX_ctrl_jump_sel <= 1'b0;
+            ID_EX_ctrl_i_type_jmp <= 1'b0;
         end else begin
+            ID_EX_valid <= IF_ID_valid;
             ID_EX_pc <= IF_ID_pc;
             ID_EX_instruction <= IF_ID_instruction;
             ID_EX_pc_plus_4 <= IF_ID_pc_plus_4;
@@ -320,8 +347,6 @@ module hart #(
     // =========================================================================
     // HAZARD DETECTION UNIT
     // =========================================================================
-    wire stall;
-
     hdu hdu_inst (
         .i_id_rs1    (IF_ID_instruction[19:15]),
         .i_id_rs2    (IF_ID_instruction[24:20]),
@@ -367,6 +392,10 @@ module hart #(
         .o_branch   (branch_result)
     );
 
+    // Flush when a branch is taken or any jump resolves in EX stage.
+    // This discards the 2 wrongly-fetched instructions in IF and ID.
+    assign flush = ID_EX_ctrl_i_type_jmp | branch_result;
+
     // =========================================================================
     // UPDATE PC LOGIC / JUMP LOGIC
     // =========================================================================
@@ -399,10 +428,11 @@ module hart #(
     reg [31:0] EX_MEM_rs1_rdata;    
     reg [4:0] EX_MEM_rs1_raddr;
     reg [4:0] EX_MEM_rs2_raddr;
-    reg [4:0] EX_MEM_rd_waddr;
+    // EX_MEM_rd_waddr declared above (forward decl)
 
     // control signals
-    reg EX_MEM_ctrl_rd_wen;
+    reg EX_MEM_valid;
+    // EX_MEM_ctrl_rd_wen declared above (forward decl)
     reg EX_MEM_ctrl_dmem_ren;
     reg EX_MEM_ctrl_dmem_wen;
     reg EX_MEM_ctrl_mem_to_reg;
@@ -424,6 +454,7 @@ module hart #(
             EX_MEM_rs1_raddr <= 5'b0;
             EX_MEM_rs2_raddr <= 5'b0;
             EX_MEM_rd_waddr <= 5'b0;
+            EX_MEM_valid <= 1'b0;
             EX_MEM_ctrl_rd_wen <= 1'b0;
             EX_MEM_ctrl_dmem_ren <= 1'b0;
             EX_MEM_ctrl_dmem_wen <= 1'b0;
@@ -444,6 +475,7 @@ module hart #(
             EX_MEM_rs1_raddr <= ID_EX_rs1_raddr;
             EX_MEM_rs2_raddr <= ID_EX_rs2_raddr;
             EX_MEM_rd_waddr <= ID_EX_rd_waddr;
+            EX_MEM_valid <= ID_EX_valid;
             EX_MEM_ctrl_rd_wen <= ID_EX_ctrl_rd_wen;
             EX_MEM_ctrl_dmem_ren <= ID_EX_ctrl_dmem_ren;
             EX_MEM_ctrl_dmem_wen <= ID_EX_ctrl_dmem_wen;
@@ -511,10 +543,11 @@ module hart #(
     reg [31:0] MEM_WB_rs2_rdata;  
     reg [4:0] MEM_WB_rs1_raddr;
     reg [4:0] MEM_WB_rs2_raddr;
-    reg [4:0] MEM_WB_rd_waddr;
+    // MEM_WB_rd_waddr declared above (forward decl)
 
     // control signals
-    reg MEM_WB_ctrl_rd_wen;
+    reg MEM_WB_valid;
+    // MEM_WB_ctrl_rd_wen declared above (forward decl)
     reg MEM_WB_ctrl_mem_to_reg;
     reg MEM_WB_ctrl_i_type_jmp;
     reg MEM_WB_ctrl_i_type_lui;
@@ -543,6 +576,7 @@ module hart #(
             MEM_WB_rs1_raddr <= 5'b0;
             MEM_WB_rs2_raddr <= 5'b0;
             MEM_WB_rd_waddr <= 5'b0;
+            MEM_WB_valid <= 1'b0;
             MEM_WB_ctrl_rd_wen <= 1'b0;
             MEM_WB_ctrl_mem_to_reg <= 1'b0;
             MEM_WB_ctrl_i_type_jmp <= 1'b0;
@@ -568,6 +602,7 @@ module hart #(
             MEM_WB_rs1_raddr <= EX_MEM_rs1_raddr;
             MEM_WB_rs2_raddr <= EX_MEM_rs2_raddr;
             MEM_WB_rd_waddr <= EX_MEM_rd_waddr;
+            MEM_WB_valid <= EX_MEM_valid;
             MEM_WB_ctrl_rd_wen <= EX_MEM_ctrl_rd_wen;
             MEM_WB_ctrl_mem_to_reg <= EX_MEM_ctrl_mem_to_reg;
             MEM_WB_ctrl_i_type_jmp <= EX_MEM_ctrl_i_type_jmp;
@@ -599,7 +634,7 @@ module hart #(
     // =========================================================================
     // RETIRE INTERFACE
     // =========================================================================
-    assign o_retire_valid = 1'b1;
+    assign o_retire_valid = MEM_WB_valid;
 
     assign o_retire_inst = MEM_WB_instruction;
 
