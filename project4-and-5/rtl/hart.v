@@ -145,10 +145,9 @@ module hart #(
     // =========================================================================
     // PROGRAM COUNTER
     // =========================================================================
-    wire stall; // declared here; driven by HDU instantiated below
-    wire flush; // asserted when branch/jump resolves in EX; driven after branch_logic
-
-    // Forward declarations: used in regfile/HDU before their pipeline register sections
+    // declared early to fix compilation issues
+    wire stall;
+    wire flush;
     reg        MEM_WB_ctrl_rd_wen;
     reg [ 4:0] MEM_WB_rd_waddr;
     reg        EX_MEM_ctrl_rd_wen;
@@ -392,8 +391,7 @@ module hart #(
         .o_branch   (branch_result)
     );
 
-    // Flush when a branch is taken or any jump resolves in EX stage.
-    // This discards the 2 wrongly-fetched instructions in IF and ID.
+    // flush on jump or branch
     assign flush = ID_EX_ctrl_i_type_jmp | branch_result;
 
     // =========================================================================
@@ -428,11 +426,9 @@ module hart #(
     reg [31:0] EX_MEM_rs1_rdata;    
     reg [4:0] EX_MEM_rs1_raddr;
     reg [4:0] EX_MEM_rs2_raddr;
-    // EX_MEM_rd_waddr declared above (forward decl)
 
     // control signals
     reg EX_MEM_valid;
-    // EX_MEM_ctrl_rd_wen declared above (forward decl)
     reg EX_MEM_ctrl_dmem_ren;
     reg EX_MEM_ctrl_dmem_wen;
     reg EX_MEM_ctrl_mem_to_reg;
@@ -543,11 +539,9 @@ module hart #(
     reg [31:0] MEM_WB_rs2_rdata;  
     reg [4:0] MEM_WB_rs1_raddr;
     reg [4:0] MEM_WB_rs2_raddr;
-    // MEM_WB_rd_waddr declared above (forward decl)
 
     // control signals
     reg MEM_WB_valid;
-    // MEM_WB_ctrl_rd_wen declared above (forward decl)
     reg MEM_WB_ctrl_mem_to_reg;
     reg MEM_WB_ctrl_i_type_jmp;
     reg MEM_WB_ctrl_i_type_lui;
