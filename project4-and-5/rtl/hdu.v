@@ -20,12 +20,10 @@ module hdu (
 
     // Hazards from the instruction in EX (one cycle ahead of ID):
     wire hazard_ex_rs1 = i_ex_rd_wen && (i_ex_rd_waddr != 5'd0) && (i_ex_rd_waddr == i_id_rs1);
-
     wire hazard_ex_rs2 = i_ex_rd_wen && (i_ex_rd_waddr != 5'd0) && (i_ex_rd_waddr == i_id_rs2);
 
     // Hazards from the instruction in MEM (two cycles ahead of ID):
     wire hazard_mem_rs1 = i_mem_rd_wen && (i_mem_rd_waddr != 5'd0) && (i_mem_rd_waddr == i_id_rs1);
-
     wire hazard_mem_rs2 = i_mem_rd_wen && (i_mem_rd_waddr != 5'd0) && (i_mem_rd_waddr == i_id_rs2);
 
     assign o_stall = hazard_ex_rs1 | hazard_ex_rs2 | hazard_mem_rs1 | hazard_mem_rs2;
