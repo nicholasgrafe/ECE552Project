@@ -14,7 +14,7 @@ module fwdu (
     input  wire       i_wb_rd_wen,
     input  wire [4:0] i_wb_rd_waddr,
 
-    // forwarding mux select signals (outputs)
+    // forwarding mux select signals
     output wire [1:0] o_fwd_rs1_sel,
     output wire [1:0] o_fwd_rs2_sel
 );
@@ -27,7 +27,6 @@ module fwdu (
     wire fwd_mem_rs1 = i_wb_rd_wen && (i_wb_rd_waddr != 5'd0) && (i_wb_rd_waddr == i_ex_rs1_raddr);
     wire fwd_mem_rs2 = i_wb_rd_wen && (i_wb_rd_waddr != 5'd0) && (i_wb_rd_waddr == i_ex_rs2_raddr);
 
-    // 2-bit forwarding select for rs1 and rs2:
     // 2'b00 = no forwarding
     // 2'b01 = EX-to-EX
     // 2'b10 = MEM-to-EX
