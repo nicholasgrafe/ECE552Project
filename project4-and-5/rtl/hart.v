@@ -148,10 +148,17 @@ module hart #(
     // declared early to fix compilation issues
     wire stall;
     wire flush;
-    reg        MEM_WB_ctrl_rd_wen;
-    reg [ 4:0] MEM_WB_rd_waddr;
-    reg        EX_MEM_ctrl_rd_wen;
-    reg [ 4:0] EX_MEM_rd_waddr;
+    reg [31:0] EX_MEM_alu_result;
+    reg [31:0] EX_MEM_pc_plus_4;
+    reg [31:0] EX_MEM_pc_plus_imm;
+    reg [31:0] EX_MEM_immediate;
+    reg [4:0] MEM_WB_rd_waddr;
+    reg [4:0] EX_MEM_rd_waddr;
+    reg EX_MEM_ctrl_i_type_jmp;
+    reg EX_MEM_ctrl_i_type_lui;
+    reg EX_MEM_ctrl_i_type_unsigned;
+    reg MEM_WB_ctrl_rd_wen;
+    reg EX_MEM_ctrl_rd_wen;
 
     reg [31:0] pc;
     wire [31:0] next_pc;
@@ -177,7 +184,7 @@ module hart #(
     // =========================================================================
     // IF/ID Pipeline Register
     // =========================================================================
-    reg        IF_ID_valid;
+    reg IF_ID_valid;
     reg [31:0] IF_ID_pc;
     reg [31:0] IF_ID_instruction;
     reg [31:0] IF_ID_pc_plus_4;
@@ -201,16 +208,16 @@ module hart #(
     // =========================================================================
     // Control unit wires
     wire [5:0] ctrl_imm_fmt;
-    wire       ctrl_rd_wen;
-    wire       ctrl_i_type_lui;
-    wire       ctrl_i_type_unsigned;
-    wire       ctrl_alu_imm;
-    wire       ctrl_dmem_ren;
-    wire       ctrl_dmem_wen;
-    wire       ctrl_mem_to_reg;
-    wire       ctrl_branch_en;
-    wire       ctrl_jump_sel;
-    wire       ctrl_i_type_jmp;
+    wire ctrl_rd_wen;
+    wire ctrl_i_type_lui;
+    wire ctrl_i_type_unsigned;
+    wire ctrl_alu_imm;
+    wire ctrl_dmem_ren;
+    wire ctrl_dmem_wen;
+    wire ctrl_mem_to_reg;
+    wire ctrl_branch_en;
+    wire ctrl_jump_sel;
+    wire ctrl_i_type_jmp;
 
     control ctrl_unit(
         .i_opcode    (IF_ID_instruction[6:0]),
@@ -347,31 +354,67 @@ module hart #(
     // HAZARD DETECTION UNIT
     // =========================================================================
     hdu hdu_inst (
-        .i_id_rs1    (IF_ID_instruction[19:15]),
-        .i_id_rs2    (IF_ID_instruction[24:20]),
-        .i_ex_rd_wen (ID_EX_ctrl_rd_wen),
+        .i_id_rs1     (IF_ID_instruction[19:15]),
+        .i_id_rs2     (IF_ID_instruction[24:20]),
+        .i_ex_rd_wen  (ID_EX_ctrl_rd_wen),
         .i_ex_rd_waddr(ID_EX_rd_waddr),
-        .i_mem_rd_wen(EX_MEM_ctrl_rd_wen),
-        .i_mem_rd_waddr(EX_MEM_rd_waddr),
-        .o_stall     (stall)
+        .i_ex_dmem_ren(ID_EX_ctrl_dmem_ren),
+        .o_stall      (stall)
     );
+
+    // =========================================================================
+    // FORWARDING UNIT
+    // =========================================================================
+    wire [1:0] fwd_rs1_sel;
+    wire [1:0] fwd_rs2_sel;
+
+    fwdu fwdu_inst (
+        .i_ex_rs1_raddr(ID_EX_rs1_raddr),
+        .i_ex_rs2_raddr(ID_EX_rs2_raddr),
+        .i_mem_rd_wen  (EX_MEM_ctrl_rd_wen),
+        .i_mem_rd_waddr(EX_MEM_rd_waddr),
+        .i_wb_rd_wen   (MEM_WB_ctrl_rd_wen),
+        .i_wb_rd_waddr (MEM_WB_rd_waddr),
+        .o_fwd_rs1_sel (fwd_rs1_sel),
+        .o_fwd_rs2_sel (fwd_rs2_sel)
+    );
+
+    // EX stage result
+    wire [31:0] ex_stage_mux_jmp;
+    wire [31:0] ex_stage_mux_lui;
+    wire [31:0] ex_stage_fwd_data;
+
+    assign ex_stage_mux_jmp  = EX_MEM_ctrl_i_type_jmp     ? EX_MEM_pc_plus_4 : EX_MEM_alu_result;
+    assign ex_stage_mux_lui  = EX_MEM_ctrl_i_type_lui      ? EX_MEM_immediate : EX_MEM_pc_plus_imm;
+    assign ex_stage_fwd_data = EX_MEM_ctrl_i_type_unsigned ? ex_stage_mux_lui : ex_stage_mux_jmp;
 
     // =========================================================================
     // ALU / EXECUTE LOGIC
     // =========================================================================
-    wire [31:0] alu_op2;
     wire [31:0] alu_result;
-    wire        alu_eq;
-    wire        alu_slt;
+    wire [31:0] alu_op1;
+    wire [31:0] alu_op2;
+    wire [31:0] fwd_rs2_data;
+    wire alu_eq;
+    wire alu_slt;
 
-    assign alu_op2 = ID_EX_ctrl_alu_imm ? ID_EX_immediate : ID_EX_rs2_rdata;
+    // MEM-EX forwarding feeds the rd_wdata
+    assign alu_op1 = (fwd_rs1_sel == 2'b01) ? ex_stage_fwd_data :
+                     (fwd_rs1_sel == 2'b10) ? rd_wdata :
+                                        ID_EX_rs1_rdata;
+
+    assign fwd_rs2_data = (fwd_rs2_sel == 2'b01) ? ex_stage_fwd_data :
+                          (fwd_rs2_sel == 2'b10) ? rd_wdata :
+                                             ID_EX_rs2_rdata;
+
+    assign alu_op2 = ID_EX_ctrl_alu_imm ? ID_EX_immediate : fwd_rs2_data;
 
     alu alu_inst (
         .i_opsel   ((ID_EX_ctrl_dmem_ren | ID_EX_ctrl_dmem_wen) ? 3'b000 : ID_EX_instruction[14:12]),
         .i_sub     (~ID_EX_ctrl_alu_imm & ID_EX_instruction[30]),
         .i_unsigned(ID_EX_instruction[12]),
         .i_arith   (ID_EX_instruction[30]),
-        .i_op1     (ID_EX_rs1_rdata),
+        .i_op1     (alu_op1),
         .i_op2     (alu_op2),
         .o_result  (alu_result),
         .o_eq      (alu_eq),
@@ -417,13 +460,9 @@ module hart #(
     // data signals
     reg [31:0] EX_MEM_pc;
     reg [31:0] EX_MEM_instruction;
-    reg [31:0] EX_MEM_pc_plus_4;
-    reg [31:0] EX_MEM_pc_plus_imm;
     reg [31:0] EX_MEM_next_pc;
-    reg [31:0] EX_MEM_immediate;
-    reg [31:0] EX_MEM_alu_result;
     reg [31:0] EX_MEM_rs2_rdata;
-    reg [31:0] EX_MEM_rs1_rdata;    
+    reg [31:0] EX_MEM_rs1_rdata;
     reg [4:0] EX_MEM_rs1_raddr;
     reg [4:0] EX_MEM_rs2_raddr;
 
@@ -432,9 +471,6 @@ module hart #(
     reg EX_MEM_ctrl_dmem_ren;
     reg EX_MEM_ctrl_dmem_wen;
     reg EX_MEM_ctrl_mem_to_reg;
-    reg EX_MEM_ctrl_i_type_jmp;
-    reg EX_MEM_ctrl_i_type_lui;
-    reg EX_MEM_ctrl_i_type_unsigned;
 
     always @(posedge i_clk) begin
         if (i_rst) begin
@@ -466,8 +502,8 @@ module hart #(
             EX_MEM_next_pc <= next_pc;
             EX_MEM_immediate <= ID_EX_immediate;
             EX_MEM_alu_result <= alu_result;
-            EX_MEM_rs2_rdata <= ID_EX_rs2_rdata;
-            EX_MEM_rs1_rdata <= ID_EX_rs1_rdata;
+            EX_MEM_rs2_rdata <= fwd_rs2_data;
+            EX_MEM_rs1_rdata <= alu_op1;
             EX_MEM_rs1_raddr <= ID_EX_rs1_raddr;
             EX_MEM_rs2_raddr <= ID_EX_rs2_raddr;
             EX_MEM_rd_waddr <= ID_EX_rd_waddr;
@@ -486,7 +522,7 @@ module hart #(
     // MEMORY LOGIC
     // =========================================================================
     wire [31:0] mem_addr   = EX_MEM_alu_result;
-    wire [1:0]  mem_offset = mem_addr[1:0];
+    wire [1:0] mem_offset = mem_addr[1:0];
 
     assign o_dmem_addr = {mem_addr[31:2], 2'b00};
 
@@ -551,9 +587,9 @@ module hart #(
 
     // dmem retire signals
     reg [31:0] MEM_WB_dmem_addr;
-    reg [3:0] MEM_WB_dmem_mask;
     reg [31:0] MEM_WB_dmem_wdata;
     reg [31:0] MEM_WB_dmem_rdata;
+    reg [3:0] MEM_WB_dmem_mask;
 
     always @(posedge i_clk) begin
         if (i_rst) begin
@@ -644,14 +680,14 @@ module hart #(
     assign o_retire_rs2_rdata = MEM_WB_rs2_rdata;
     assign o_retire_rd_waddr = MEM_WB_ctrl_rd_wen ? MEM_WB_rd_waddr : 5'd0;
     assign o_retire_rd_wdata = rd_wdata;
-    assign o_retire_pc        = MEM_WB_pc;
-    assign o_retire_next_pc   = MEM_WB_next_pc;
+    assign o_retire_pc = MEM_WB_pc;
+    assign o_retire_next_pc = MEM_WB_next_pc;
     assign o_retire_dmem_addr = MEM_WB_dmem_addr;
-    assign o_retire_dmem_ren  = MEM_WB_ctrl_dmem_ren;
-    assign o_retire_dmem_wen  = MEM_WB_ctrl_dmem_wen;
+    assign o_retire_dmem_ren = MEM_WB_ctrl_dmem_ren;
+    assign o_retire_dmem_wen = MEM_WB_ctrl_dmem_wen;
     assign o_retire_dmem_mask = MEM_WB_dmem_mask;
-    assign o_retire_dmem_wdata= MEM_WB_dmem_wdata;
-    assign o_retire_dmem_rdata= MEM_WB_dmem_rdata;
+    assign o_retire_dmem_wdata = MEM_WB_dmem_wdata;
+    assign o_retire_dmem_rdata = MEM_WB_dmem_rdata;
 
 endmodule
 
