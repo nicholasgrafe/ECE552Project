@@ -6,11 +6,11 @@ module fwdu (
     input  wire [4:0] i_ex_rs1_raddr,
     input  wire [4:0] i_ex_rs2_raddr,
 
-    // EX/MEM register (instruction in MEM stage)
+    // EX/MEM inputs
     input  wire       i_mem_rd_wen,
     input  wire [4:0] i_mem_rd_waddr,
 
-    // MEM/WB register (instruction in WB stage)
+    // MEM/WB inputs
     input  wire       i_wb_rd_wen,
     input  wire [4:0] i_wb_rd_waddr,
 

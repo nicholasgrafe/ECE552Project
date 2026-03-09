@@ -384,8 +384,8 @@ module hart #(
     wire [31:0] ex_stage_mux_lui;
     wire [31:0] ex_stage_fwd_data;
 
-    assign ex_stage_mux_jmp  = EX_MEM_ctrl_i_type_jmp     ? EX_MEM_pc_plus_4 : EX_MEM_alu_result;
-    assign ex_stage_mux_lui  = EX_MEM_ctrl_i_type_lui      ? EX_MEM_immediate : EX_MEM_pc_plus_imm;
+    assign ex_stage_mux_jmp  = EX_MEM_ctrl_i_type_jmp ? EX_MEM_pc_plus_4 : EX_MEM_alu_result;
+    assign ex_stage_mux_lui  = EX_MEM_ctrl_i_type_lui ? EX_MEM_immediate : EX_MEM_pc_plus_imm;
     assign ex_stage_fwd_data = EX_MEM_ctrl_i_type_unsigned ? ex_stage_mux_lui : ex_stage_mux_jmp;
 
     // =========================================================================
@@ -521,7 +521,7 @@ module hart #(
     // =========================================================================
     // MEMORY LOGIC
     // =========================================================================
-    wire [31:0] mem_addr   = EX_MEM_alu_result;
+    wire [31:0] mem_addr = EX_MEM_alu_result;
     wire [1:0] mem_offset = mem_addr[1:0];
 
     assign o_dmem_addr = {mem_addr[31:2], 2'b00};
@@ -669,7 +669,7 @@ module hart #(
     assign o_retire_inst = MEM_WB_instruction;
 
     wire is_ebreak = (MEM_WB_instruction[6:0]  == 7'b1110011) &
-                     (MEM_WB_instruction[14:12] == 3'b000)     &
+                     (MEM_WB_instruction[14:12] == 3'b000) &
                      (MEM_WB_instruction[31:20] == 12'b000000000001);
     assign o_retire_halt = is_ebreak;
 
