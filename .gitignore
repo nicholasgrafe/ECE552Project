@@ -1,10 +1,15 @@
 # macOS
 .DS_Store
 
-# Icarus Verilog outputs in tb/
+# Icarus Verilog outputs
 **/tb/a.out
+a.out
 **/tb/*.vcd
 **/tb/*.lxt
+
+# Assembled test program memory files
+**/tb/program.mem
+program.mem
 
 # Assembled test outputs
 **/tests/asm/*.hex
