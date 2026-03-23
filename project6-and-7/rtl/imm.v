@@ -27,8 +27,8 @@ module imm (
     // for all instruction formats. You are encouraged to make a testbench and
     // look through waveforms as you do this.
     wire [31:0] imm_r = {{32{1'bx}}};
-    wire [31:0] imm_i = {{21{i_inst[31]}}, i_inst[30:20]};
-    wire [31:0] imm_s = {{21{i_inst[31]}}, i_inst[30:25], i_inst[11:7]};
+    wire [31:0] imm_i = {{20{i_inst[31]}}, i_inst[31:20]};
+    wire [31:0] imm_s = {{20{i_inst[31]}}, i_inst[31:25], i_inst[11:7]};
     wire [31:0] imm_b = {{20{i_inst[31]}}, i_inst[7], i_inst[30:25], i_inst[11:8], 1'b0};
     wire [31:0] imm_u = {i_inst[31:12], 12'b0};
     wire [31:0] imm_j = {{12{i_inst[31]}}, // sign extension

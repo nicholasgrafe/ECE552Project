@@ -168,11 +168,21 @@ module hart #(
 `endif
 );
     // =========================================================================
-    // PROGRAM COUNTER
+    // STALL / FLUSHES
     // =========================================================================
-    // declared early to fix compilation issues
+    wire hdu_stall;
+    wire dmem_stall;
+    wire imem_stall;
+    wire pipeline_stall;
     wire stall;
     wire flush;
+
+    // early declarations for compilation issues
+    reg imem_inflight;
+    reg imem_resp_pending;
+    reg [31:0] imem_resp_data;
+    reg [31:0] imem_resp_pc;
+    reg dmem_inflight;
     reg [31:0] EX_MEM_alu_result;
     reg [31:0] EX_MEM_pc_plus_4;
     reg [31:0] EX_MEM_pc_plus_imm;
@@ -184,7 +194,13 @@ module hart #(
     reg EX_MEM_ctrl_i_type_unsigned;
     reg MEM_WB_ctrl_rd_wen;
     reg EX_MEM_ctrl_rd_wen;
+    reg EX_MEM_valid;
+    reg EX_MEM_ctrl_dmem_ren;
+    reg EX_MEM_ctrl_dmem_wen;
 
+    // =========================================================================
+    // PROGRAM COUNTER
+    // =========================================================================
     reg [31:0] pc;
     wire [31:0] next_pc;
     wire[31:0] pc_plus_4;
@@ -194,18 +210,47 @@ module hart #(
     always @(posedge i_clk) begin
         if (i_rst)
             pc <= RESET_ADDR;
-        else if (flush | !stall)
+        else if (flush)
             pc <= next_pc;
+        else if (imem_resp_pending && !pipeline_stall)
+            pc <= pc + 32'd4;
     end
 
     // =========================================================================
     // INSTRUCTION FETCH
     // =========================================================================
-    wire [31:0] instruction;
+    reg [31:0] imem_fetch_pc;
 
     assign o_imem_raddr = pc;
-    assign o_imem_ren   = 1'b1; // TODO: gate on i_imem_ready and pipeline stall logic
-    assign instruction = i_imem_rdata;
+    assign o_imem_ren   = i_imem_ready && !imem_inflight && !imem_resp_pending && !pipeline_stall && !flush;
+
+    always @(posedge i_clk) begin
+        if (i_rst | flush) begin
+            imem_inflight     <= 1'b0;
+            imem_fetch_pc     <= RESET_ADDR;
+            imem_resp_pending <= 1'b0;
+            imem_resp_data    <= 32'b0;
+            imem_resp_pc      <= RESET_ADDR;
+        end else begin
+            if (o_imem_ren) begin
+                imem_inflight <= 1'b1;
+                imem_fetch_pc <= pc;
+            end
+
+            if (i_imem_valid && imem_inflight) begin
+                imem_inflight     <= 1'b0;
+                imem_resp_pending <= 1'b1;
+                imem_resp_data    <= i_imem_rdata;
+                imem_resp_pc      <= imem_fetch_pc;
+            end
+
+            if (imem_resp_pending && !pipeline_stall && !flush) begin
+                imem_resp_pending <= 1'b0;
+            end
+        end
+    end
+
+    assign imem_stall = imem_inflight & ~i_imem_valid;
 
     // =========================================================================
     // IF/ID Pipeline Register
@@ -221,11 +266,14 @@ module hart #(
             IF_ID_pc <= RESET_ADDR;
             IF_ID_instruction <= 32'b0;
             IF_ID_pc_plus_4 <= RESET_ADDR;
-        end else if (!stall) begin
+        end else if (imem_resp_pending && !pipeline_stall) begin
             IF_ID_valid <= 1'b1;
-            IF_ID_pc <= pc;
-            IF_ID_instruction <= instruction;
-            IF_ID_pc_plus_4 <= pc_plus_4;
+            IF_ID_pc <= imem_resp_pc;
+            IF_ID_instruction <= imem_resp_data;
+            IF_ID_pc_plus_4 <= imem_resp_pc + 32'd4;
+        end else if (!pipeline_stall && IF_ID_valid) begin
+            // ID/EX is consuming IF/ID this cycle — clear it to prevent re-consumption
+            IF_ID_valid <= 1'b0;
         end
     end
 
@@ -277,6 +325,9 @@ module hart #(
     wire [31:0] rs1_rdata;
     wire [31:0] rs2_rdata;
     wire [31:0] rd_wdata;
+    wire        wb_rd_wen;
+    wire [4:0]  wb_rd_waddr;
+    wire [31:0] wb_rd_wdata;
 
     rf #(.BYPASS_EN(1)) regfile (
         .i_clk      (i_clk),
@@ -285,9 +336,9 @@ module hart #(
         .o_rs1_rdata(rs1_rdata),
         .i_rs2_raddr(IF_ID_instruction[24:20]),
         .o_rs2_rdata(rs2_rdata),
-        .i_rd_wen   (MEM_WB_ctrl_rd_wen),
-        .i_rd_waddr (MEM_WB_rd_waddr),
-        .i_rd_wdata (rd_wdata)
+        .i_rd_wen   (wb_rd_wen),
+        .i_rd_waddr (wb_rd_waddr),
+        .i_rd_wdata (wb_rd_wdata)
     );
 
     // =========================================================================
@@ -339,7 +390,8 @@ module hart #(
             ID_EX_ctrl_branch_en <= 1'b0;
             ID_EX_ctrl_jump_sel <= 1'b0;
             ID_EX_ctrl_i_type_jmp <= 1'b0;
-        end else if (flush | stall) begin
+        end else if (dmem_stall) begin
+        end else if (flush | hdu_stall) begin
             ID_EX_valid <= 1'b0;
             ID_EX_ctrl_rd_wen <= 1'b0;
             ID_EX_ctrl_i_type_lui <= 1'b0;
@@ -362,16 +414,16 @@ module hart #(
             ID_EX_rs1_raddr <= IF_ID_instruction[19:15];
             ID_EX_rs2_raddr <= IF_ID_instruction[24:20];
             ID_EX_rd_waddr <= IF_ID_instruction[11:7];
-            ID_EX_ctrl_rd_wen <= ctrl_rd_wen;
-            ID_EX_ctrl_i_type_lui <= ctrl_i_type_lui;
-            ID_EX_ctrl_i_type_unsigned <= ctrl_i_type_unsigned;
-            ID_EX_ctrl_alu_imm <= ctrl_alu_imm;
-            ID_EX_ctrl_dmem_ren <= ctrl_dmem_ren;
-            ID_EX_ctrl_dmem_wen <= ctrl_dmem_wen;
-            ID_EX_ctrl_mem_to_reg <= ctrl_mem_to_reg;
-            ID_EX_ctrl_branch_en <= ctrl_branch_en;
-            ID_EX_ctrl_jump_sel <= ctrl_jump_sel;
-            ID_EX_ctrl_i_type_jmp <= ctrl_i_type_jmp;
+            ID_EX_ctrl_rd_wen <= IF_ID_valid && ctrl_rd_wen;
+            ID_EX_ctrl_i_type_lui <= IF_ID_valid && ctrl_i_type_lui;
+            ID_EX_ctrl_i_type_unsigned <= IF_ID_valid && ctrl_i_type_unsigned;
+            ID_EX_ctrl_alu_imm <= IF_ID_valid && ctrl_alu_imm;
+            ID_EX_ctrl_dmem_ren <= IF_ID_valid && ctrl_dmem_ren;
+            ID_EX_ctrl_dmem_wen <= IF_ID_valid && ctrl_dmem_wen;
+            ID_EX_ctrl_mem_to_reg <= IF_ID_valid && ctrl_mem_to_reg;
+            ID_EX_ctrl_branch_en <= IF_ID_valid && ctrl_branch_en;
+            ID_EX_ctrl_jump_sel <= IF_ID_valid && ctrl_jump_sel;
+            ID_EX_ctrl_i_type_jmp <= IF_ID_valid && ctrl_i_type_jmp;
         end
     end
         
@@ -382,11 +434,21 @@ module hart #(
     hdu hdu_inst (
         .i_id_rs1     (IF_ID_instruction[19:15]),
         .i_id_rs2     (IF_ID_instruction[24:20]),
-        .i_ex_rd_wen  (ID_EX_ctrl_rd_wen),
+        .i_ex_rd_wen  (ID_EX_valid && ID_EX_ctrl_rd_wen),
         .i_ex_rd_waddr(ID_EX_rd_waddr),
-        .i_ex_dmem_ren(ID_EX_ctrl_dmem_ren),
-        .o_stall      (stall)
+        .i_ex_dmem_ren(ID_EX_valid && ID_EX_ctrl_dmem_ren),
+        .o_stall      (hdu_stall)
     );
+
+    wire dmem_req_fire;
+
+    assign dmem_req_fire  = (EX_MEM_ctrl_dmem_ren | EX_MEM_ctrl_dmem_wen) &&
+                            EX_MEM_valid &&
+                            i_dmem_ready &&
+                            !dmem_inflight;
+    assign dmem_stall     = dmem_inflight & ~i_dmem_valid;
+    assign pipeline_stall = hdu_stall | dmem_stall;
+    assign stall          = pipeline_stall | imem_stall;
 
     // =========================================================================
     // FORWARDING UNIT
@@ -397,10 +459,10 @@ module hart #(
     fwdu fwdu_inst (
         .i_ex_rs1_raddr(ID_EX_rs1_raddr),
         .i_ex_rs2_raddr(ID_EX_rs2_raddr),
-        .i_mem_rd_wen  (EX_MEM_ctrl_rd_wen),
+        .i_mem_rd_wen  (EX_MEM_valid && EX_MEM_ctrl_rd_wen),
         .i_mem_rd_waddr(EX_MEM_rd_waddr),
-        .i_wb_rd_wen   (MEM_WB_ctrl_rd_wen),
-        .i_wb_rd_waddr (MEM_WB_rd_waddr),
+        .i_wb_rd_wen   (wb_rd_wen),
+        .i_wb_rd_waddr (wb_rd_waddr),
         .o_fwd_rs1_sel (fwd_rs1_sel),
         .o_fwd_rs2_sel (fwd_rs2_sel)
     );
@@ -426,11 +488,11 @@ module hart #(
 
     // MEM-EX forwarding feeds the rd_wdata
     assign alu_op1 = (fwd_rs1_sel == 2'b01) ? ex_stage_fwd_data :
-                     (fwd_rs1_sel == 2'b10) ? rd_wdata :
+                     (fwd_rs1_sel == 2'b10) ? wb_rd_wdata :
                                         ID_EX_rs1_rdata;
 
     assign fwd_rs2_data = (fwd_rs2_sel == 2'b01) ? ex_stage_fwd_data :
-                          (fwd_rs2_sel == 2'b10) ? rd_wdata :
+                          (fwd_rs2_sel == 2'b10) ? wb_rd_wdata :
                                              ID_EX_rs2_rdata;
 
     assign alu_op2 = ID_EX_ctrl_alu_imm ? ID_EX_immediate : fwd_rs2_data;
@@ -461,7 +523,7 @@ module hart #(
     );
 
     // flush on jump or branch
-    assign flush = ID_EX_ctrl_i_type_jmp | branch_result;
+    assign flush = ID_EX_valid && (ID_EX_ctrl_i_type_jmp | branch_result) && ~dmem_stall;
 
     // =========================================================================
     // UPDATE PC LOGIC / JUMP LOGIC
@@ -493,9 +555,6 @@ module hart #(
     reg [4:0] EX_MEM_rs2_raddr;
 
     // control signals
-    reg EX_MEM_valid;
-    reg EX_MEM_ctrl_dmem_ren;
-    reg EX_MEM_ctrl_dmem_wen;
     reg EX_MEM_ctrl_mem_to_reg;
 
     always @(posedge i_clk) begin
@@ -520,7 +579,7 @@ module hart #(
             EX_MEM_ctrl_i_type_jmp <= 1'b0;
             EX_MEM_ctrl_i_type_lui <= 1'b0;
             EX_MEM_ctrl_i_type_unsigned <= 1'b0;
-        end else begin
+        end else if (!dmem_stall) begin
             EX_MEM_pc <= ID_EX_pc;
             EX_MEM_instruction <= ID_EX_instruction;
             EX_MEM_pc_plus_4 <= ID_EX_pc_plus_4;
@@ -552,8 +611,8 @@ module hart #(
 
     assign o_dmem_addr = {mem_addr[31:2], 2'b00};
 
-    assign o_dmem_ren = EX_MEM_ctrl_dmem_ren;
-    assign o_dmem_wen = EX_MEM_ctrl_dmem_wen;
+    assign o_dmem_ren = EX_MEM_ctrl_dmem_ren & dmem_req_fire;
+    assign o_dmem_wen = EX_MEM_ctrl_dmem_wen & dmem_req_fire;
 
     wire [3:0] byte_mask = (mem_offset == 2'b00) ? 4'b0001 :
                            (mem_offset == 2'b01) ? 4'b0010 :
@@ -584,6 +643,17 @@ module hart #(
         .i_byte_offset(mem_offset),
         .o_dmem_ext   (dmem_ext)
     );
+
+    always @(posedge i_clk) begin
+        if (i_rst | flush) begin
+            dmem_inflight <= 1'b0;
+        end else begin
+            if (dmem_req_fire)
+                dmem_inflight <= 1'b1;
+            if (i_dmem_valid)
+                dmem_inflight <= 1'b0;
+        end
+    end
 
     // =========================================================================
     // MEM/WB Pipeline Register
@@ -616,6 +686,7 @@ module hart #(
     reg [31:0] MEM_WB_dmem_wdata;
     reg [31:0] MEM_WB_dmem_rdata;
     reg [3:0] MEM_WB_dmem_mask;
+    reg retire_valid_r;
 
     always @(posedge i_clk) begin
         if (i_rst) begin
@@ -644,7 +715,8 @@ module hart #(
             MEM_WB_dmem_mask <= 4'b0;
             MEM_WB_dmem_wdata <= 32'b0;
             MEM_WB_dmem_rdata <= 32'b0;
-        end else begin
+            retire_valid_r <= 1'b0;
+        end else if (!dmem_stall) begin
             MEM_WB_pc <= EX_MEM_pc;
             MEM_WB_instruction <= EX_MEM_instruction;
             MEM_WB_pc_plus_4 <= EX_MEM_pc_plus_4;
@@ -670,6 +742,9 @@ module hart #(
             MEM_WB_dmem_mask <= o_dmem_mask;
             MEM_WB_dmem_wdata <= o_dmem_wdata;
             MEM_WB_dmem_rdata <= i_dmem_rdata;
+            retire_valid_r <= EX_MEM_valid;
+        end else begin
+            retire_valid_r <= 1'b0;
         end
     end
 
@@ -685,12 +760,15 @@ module hart #(
     wire [31:0] mux_lui_en;
     assign mux_lui_en = MEM_WB_ctrl_i_type_lui ? MEM_WB_immediate : MEM_WB_pc_plus_imm;
 
-    assign rd_wdata = MEM_WB_ctrl_i_type_unsigned ? mux_lui_en : mux_jump_type;
+    assign rd_wdata   = MEM_WB_ctrl_i_type_unsigned ? mux_lui_en : mux_jump_type;
+    assign wb_rd_wen   = MEM_WB_valid && MEM_WB_ctrl_rd_wen;
+    assign wb_rd_waddr = MEM_WB_rd_waddr;
+    assign wb_rd_wdata = rd_wdata;
 
     // =========================================================================
     // RETIRE INTERFACE
     // =========================================================================
-    assign o_retire_valid = MEM_WB_valid;
+    assign o_retire_valid = retire_valid_r;
 
     assign o_retire_inst = MEM_WB_instruction;
 
@@ -704,8 +782,8 @@ module hart #(
     assign o_retire_rs1_rdata = MEM_WB_rs1_rdata;
     assign o_retire_rs2_raddr = MEM_WB_rs2_raddr;
     assign o_retire_rs2_rdata = MEM_WB_rs2_rdata;
-    assign o_retire_rd_waddr = MEM_WB_ctrl_rd_wen ? MEM_WB_rd_waddr : 5'd0;
-    assign o_retire_rd_wdata = rd_wdata;
+    assign o_retire_rd_waddr = wb_rd_wen ? wb_rd_waddr : 5'd0;
+    assign o_retire_rd_wdata = wb_rd_wdata;
     assign o_retire_pc = MEM_WB_pc;
     assign o_retire_next_pc = MEM_WB_next_pc;
     assign o_retire_dmem_addr = MEM_WB_dmem_addr;
