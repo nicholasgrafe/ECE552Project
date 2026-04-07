@@ -39,6 +39,7 @@ module hart #(
     // Instruction word fetched from memory, available sequentially some
     // M cycles after a request (imem_ren) is issued.
     input  wire [31:0] i_imem_rdata,
+
     // Data memory accesses go through a separate read/write data memory (dmem)
     // that is shared between read (load) and write (stored). The port accepts
     // a 32-bit address, read or write enable, and mask (explained below) each
@@ -61,8 +62,8 @@ module hart #(
     // When asserted, the memory will perform a write to the aligned address
     // `o_dmem_addr`. When asserted, the memory will write the bytes in
     // `o_dmem_wdata` (specified by the mask) to memory at the specified
-    // address on the next rising clock edge. It is illegal to assert this and
-    // `o_dmem_ren` on the same cycle.
+    // address. It is illegal to assert this and `o_dmem_ren` on the same
+    // cycle.
     output wire        o_dmem_wen,
     // The 32-bit word to write to memory when `o_dmem_wen` is asserted. When
     // write enable is asserted, the byte lanes specified by the mask will be
@@ -70,8 +71,8 @@ module hart #(
     // clock edge. The other byte lanes of the word will be unaffected.
     output wire [31:0] o_dmem_wdata,
     // The dmem interface expects word (32 bit) aligned addresses. However,
-    // WISC-25 supports byte and half-word loads and stores at unaligned and
-    // 16-bit aligned addresses, respectively. To support this, the access
+    // the processor supports byte and half-word loads and stores at unaligned
+    // and 16-bit aligned addresses, respectively. To support this, the access
     // mask specifies which bytes within the 32-bit word are actually read
     // from or written to memory.
     //
@@ -97,7 +98,7 @@ module hart #(
     // address, for the bytes enabled by the mask. When read enable is not
     // asserted, or for bytes not set in the mask, the value is undefined.
     input  wire [31:0] i_dmem_rdata,
-	// The output `retire` interface is used to signal to the testbench that
+    // The output `retire` interface is used to signal to the testbench that
     // the CPU has completed and retired an instruction. A single cycle
     // implementation will assert this every cycle; however, a pipelined
     // implementation that needs to stall (due to internal hazards or waiting
@@ -143,17 +144,11 @@ module hart #(
     // writeback stage by this instruction. If rd is 5'd0, this field is
     // ignored and can be treated as a don't care.
     output wire [31:0] o_retire_rd_wdata,
-    // Data memory address accessed by the retiring instruction (aligned).
     output wire [31:0] o_retire_dmem_addr,
-    // Data memory byte mask for the retiring instruction.
     output wire [ 3:0] o_retire_dmem_mask,
-    // Data memory read enable for the retiring instruction.
     output wire        o_retire_dmem_ren,
-    // Data memory write enable for the retiring instruction.
     output wire        o_retire_dmem_wen,
-    // Data memory read data (raw) for the retiring instruction.
     output wire [31:0] o_retire_dmem_rdata,
-    // Data memory write data for the retiring instruction.
     output wire [31:0] o_retire_dmem_wdata,
     // The current program counter of the instruction being retired - i.e.
     // the instruction memory address that the instruction was fetched from.
@@ -162,11 +157,8 @@ module hart #(
     // instructions, this is `o_retire_pc + 4`, but must be the branch or jump
     // target for *taken* branches and jumps.
     output wire [31:0] o_retire_next_pc
-
-`ifdef RISCV_FORMAL
-    ,`RVFI_OUTPUTS,
-`endif
 );
+
     // =========================================================================
     // STALL / FLUSHES (also includes early declarations for compilation)
     // =========================================================================
