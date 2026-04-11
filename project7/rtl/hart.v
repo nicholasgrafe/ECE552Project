@@ -163,14 +163,8 @@ module hart #(
     // =========================================================================
     wire hdu_stall;
     wire dmem_stall;
-    wire pipeline_stall;
+    wire fetch_stall;
     wire flush;
-    reg imem_inflight;
-    reg imem_skip_resp;
-    reg imem_resp_pending;
-    reg [31:0] imem_resp_data;
-    reg [31:0] imem_resp_pc;
-    reg dmem_inflight;
     reg [31:0] EX_MEM_alu_result;
     reg [31:0] EX_MEM_pc_plus_4;
     reg [31:0] EX_MEM_pc_plus_imm;
@@ -186,13 +180,25 @@ module hart #(
     reg EX_MEM_ctrl_dmem_ren;
     reg EX_MEM_ctrl_dmem_wen;
 
+    // Cache interface wires (driven/used below; caches instantiated at bottom)
+    wire        icache_busy;
+    wire [31:0] icache_res_rdata;
+    wire        dcache_busy;
+    wire [31:0] dcache_res_rdata;
+    // CPU-side dmem request wires (driven by MEM stage, consumed by dcache)
+    wire [31:0] cpu_dmem_addr;
+    wire        cpu_dmem_ren;
+    wire        cpu_dmem_wen;
+    wire [ 3:0] cpu_dmem_mask;
+    wire [31:0] cpu_dmem_wdata;
+
     // =========================================================================
     // PROGRAM COUNTER
     // =========================================================================
     reg [31:0] pc;
     wire [31:0] next_pc;
     wire[31:0] pc_plus_4;
-    
+
     assign pc_plus_4 = pc + 32'd4;
 
     always @(posedge i_clk) begin
@@ -200,55 +206,31 @@ module hart #(
             pc <= RESET_ADDR;
         else if (flush)
             pc <= next_pc;
-        else if (imem_resp_pending && !pipeline_stall)
+        else if (!icache_busy && !fetch_stall)
             pc <= pc + 32'd4;
     end
 
     // =========================================================================
-    // INSTRUCTION FETCH
+    // INSTRUCTION FETCH (INSTRUCTION CACHE)
     // =========================================================================
-    reg [31:0] imem_fetch_pc;
-
-    assign o_imem_raddr = pc;
-    assign o_imem_ren   = i_imem_ready && !imem_inflight && !imem_resp_pending && !pipeline_stall && !flush && !imem_skip_resp;
-
-    always @(posedge i_clk) begin
-        if (i_rst) begin
-            imem_inflight     <= 1'b0;
-            imem_skip_resp    <= 1'b0;
-            imem_fetch_pc     <= RESET_ADDR;
-            imem_resp_pending <= 1'b0;
-            imem_resp_data    <= 32'b0;
-            imem_resp_pc      <= RESET_ADDR;
-        end else if (flush) begin
-            imem_skip_resp    <= imem_inflight && !i_imem_valid;
-            imem_inflight     <= 1'b0;
-            imem_fetch_pc     <= RESET_ADDR;
-            imem_resp_pending <= 1'b0;
-            imem_resp_data    <= 32'b0;
-            imem_resp_pc      <= RESET_ADDR;
-        end else begin
-            if (o_imem_ren) begin
-                imem_inflight <= 1'b1;
-                imem_fetch_pc <= pc;
-            end
-
-            if (i_imem_valid) begin
-                if (imem_skip_resp) begin
-                    imem_skip_resp <= 1'b0;
-                end else if (imem_inflight) begin
-                    imem_inflight     <= 1'b0;
-                    imem_resp_pending <= 1'b1;
-                    imem_resp_data    <= i_imem_rdata;
-                    imem_resp_pc      <= imem_fetch_pc;
-                end
-            end
-
-            if (imem_resp_pending && !pipeline_stall) begin
-                imem_resp_pending <= 1'b0;
-            end
-        end
-    end
+    cache icache (
+        .i_clk      (i_clk),
+        .i_rst      (i_rst),
+        .i_mem_ready(i_imem_ready),
+        .o_mem_addr (o_imem_raddr),
+        .o_mem_ren  (o_imem_ren),
+        .o_mem_wen  (/* unused: icache never writes */),
+        .o_mem_wdata(/* unused: icache never writes */),
+        .i_mem_rdata(i_imem_rdata),
+        .i_mem_valid(i_imem_valid),
+        .o_busy     (icache_busy),
+        .i_req_addr (pc),
+        .i_req_ren  (1'b1),
+        .i_req_wen  (1'b0),
+        .i_req_mask (4'b1111),
+        .i_req_wdata(32'b0),
+        .o_res_rdata(icache_res_rdata)
+    );
 
     // =========================================================================
     // IF/ID Pipeline Register
@@ -264,12 +246,15 @@ module hart #(
             IF_ID_pc <= RESET_ADDR;
             IF_ID_instruction <= 32'b0;
             IF_ID_pc_plus_4 <= RESET_ADDR;
-        end else if (imem_resp_pending && !pipeline_stall) begin
+        end else if (fetch_stall) begin
+            // hold IF/ID contents while the pipeline is stalled downstream
+        end else if (!icache_busy) begin
             IF_ID_valid <= 1'b1;
-            IF_ID_pc <= imem_resp_pc;
-            IF_ID_instruction <= imem_resp_data;
-            IF_ID_pc_plus_4 <= imem_resp_pc + 32'd4;
-        end else if (!pipeline_stall && IF_ID_valid) begin
+            IF_ID_pc <= pc;
+            IF_ID_instruction <= icache_res_rdata;
+            IF_ID_pc_plus_4 <= pc + 32'd4;
+        end else begin
+            // icache miss: insert a bubble while waiting for the fill
             IF_ID_valid <= 1'b0;
         end
     end
@@ -435,15 +420,8 @@ module hart #(
         .o_stall      (hdu_stall)
     );
 
-    wire dmem_req_fire;
-
-    assign dmem_req_fire  = (EX_MEM_ctrl_dmem_ren | EX_MEM_ctrl_dmem_wen) &&
-                            EX_MEM_valid &&
-                            i_dmem_ready &&
-                            !dmem_inflight;
-    assign dmem_stall     = (dmem_inflight & ~i_dmem_valid) |
-                            (dmem_req_fire & EX_MEM_ctrl_dmem_ren);
-    assign pipeline_stall = hdu_stall | dmem_stall;
+    assign dmem_stall     = dcache_busy;
+    assign fetch_stall = hdu_stall | dmem_stall;
 
     // =========================================================================
     // FORWARDING UNIT
@@ -599,14 +577,35 @@ module hart #(
     end
 
     // =========================================================================
-    // MEMORY LOGIC
+    // DATA CACHE
+    // =========================================================================
+    cache dcache (
+        .i_clk      (i_clk),
+        .i_rst      (i_rst),
+        .i_mem_ready(i_dmem_ready),
+        .o_mem_addr (o_dmem_addr),
+        .o_mem_ren  (o_dmem_ren),
+        .o_mem_wen  (o_dmem_wen),
+        .o_mem_wdata(o_dmem_wdata),
+        .i_mem_rdata(i_dmem_rdata),
+        .i_mem_valid(i_dmem_valid),
+        .o_busy     (dcache_busy),
+        .i_req_addr (cpu_dmem_addr),
+        .i_req_ren  (cpu_dmem_ren),
+        .i_req_wen  (cpu_dmem_wen),
+        .i_req_mask (cpu_dmem_mask),
+        .i_req_wdata(cpu_dmem_wdata),
+        .o_res_rdata(dcache_res_rdata)
+    );
+
+    // =========================================================================
+    // MEMORY LOGIC (data cache)
     // =========================================================================
     wire [1:0] mem_offset = EX_MEM_alu_result[1:0];
 
-    assign o_dmem_addr = {EX_MEM_alu_result[31:2], 2'b00};
-
-    assign o_dmem_ren = EX_MEM_ctrl_dmem_ren & dmem_req_fire;
-    assign o_dmem_wen = EX_MEM_ctrl_dmem_wen & dmem_req_fire;
+    assign cpu_dmem_addr = {EX_MEM_alu_result[31:2], 2'b00};
+    assign cpu_dmem_ren  = EX_MEM_ctrl_dmem_ren & EX_MEM_valid;
+    assign cpu_dmem_wen  = EX_MEM_ctrl_dmem_wen & EX_MEM_valid;
 
     wire [3:0] byte_mask = (mem_offset == 2'b00) ? 4'b0001 :
                            (mem_offset == 2'b01) ? 4'b0010 :
@@ -614,9 +613,9 @@ module hart #(
                                                    4'b1000;
     wire [3:0] half_mask = mem_offset[1] ? 4'b1100 : 4'b0011;
 
-    assign o_dmem_mask = (EX_MEM_instruction[13:12] == 2'b00) ? byte_mask :
-                         (EX_MEM_instruction[13:12] == 2'b01) ? half_mask :
-                                                                 4'b1111;
+    assign cpu_dmem_mask = (EX_MEM_instruction[13:12] == 2'b00) ? byte_mask :
+                           (EX_MEM_instruction[13:12] == 2'b01) ? half_mask :
+                                                                  4'b1111;
 
     wire [31:0] sb_wdata = (mem_offset == 2'b00) ? {24'b0, EX_MEM_rs2_rdata[ 7:0]        } :
                            (mem_offset == 2'b01) ? {16'b0, EX_MEM_rs2_rdata[ 7:0],  8'b0 } :
@@ -625,29 +624,20 @@ module hart #(
     wire [31:0] sh_wdata = mem_offset[1] ? {EX_MEM_rs2_rdata[15:0], 16'b0}
                                          : EX_MEM_rs2_rdata;
 
-    assign o_dmem_wdata = (EX_MEM_instruction[13:12] == 2'b00) ? sb_wdata :
-                          (EX_MEM_instruction[13:12] == 2'b01) ? sh_wdata :
-                                                                  EX_MEM_rs2_rdata;
+    assign cpu_dmem_wdata = (EX_MEM_instruction[13:12] == 2'b00) ? sb_wdata :
+                            (EX_MEM_instruction[13:12] == 2'b01) ? sh_wdata :
+                                                                   EX_MEM_rs2_rdata;
 
-    // Sign/zero extension module
+    assign o_dmem_mask = 4'b1111;
+
+    // Sign/zero extension module reads from the cache's response data.
     wire [31:0] dmem_ext;
     sign_zero_ext sext (
-        .i_dmem_rdata (i_dmem_rdata),
+        .i_dmem_rdata (dcache_res_rdata),
         .i_funct3     (EX_MEM_instruction[14:12]),
         .i_byte_offset(mem_offset),
         .o_dmem_ext   (dmem_ext)
     );
-
-    always @(posedge i_clk) begin
-        if (i_rst | flush) begin
-            dmem_inflight <= 1'b0;
-        end else begin
-            if (dmem_req_fire && EX_MEM_ctrl_dmem_ren)
-                dmem_inflight <= 1'b1;
-            if (i_dmem_valid)
-                dmem_inflight <= 1'b0;
-        end
-    end
 
     // =========================================================================
     // MEM/WB Pipeline Register
@@ -732,10 +722,10 @@ module hart #(
             MEM_WB_ctrl_i_type_unsigned <= EX_MEM_ctrl_i_type_unsigned;
             MEM_WB_ctrl_dmem_ren <= EX_MEM_ctrl_dmem_ren;
             MEM_WB_ctrl_dmem_wen <= EX_MEM_ctrl_dmem_wen;
-            MEM_WB_dmem_addr <= o_dmem_addr;
-            MEM_WB_dmem_mask <= o_dmem_mask;
-            MEM_WB_dmem_wdata <= o_dmem_wdata;
-            MEM_WB_dmem_rdata <= i_dmem_rdata;
+            MEM_WB_dmem_addr <= cpu_dmem_addr;
+            MEM_WB_dmem_mask <= cpu_dmem_mask;
+            MEM_WB_dmem_wdata <= cpu_dmem_wdata;
+            MEM_WB_dmem_rdata <= dcache_res_rdata;
             retire_valid_r <= EX_MEM_valid;
         end else begin
             retire_valid_r <= 1'b0;
@@ -783,7 +773,6 @@ module hart #(
     assign o_retire_dmem_mask = MEM_WB_dmem_mask;
     assign o_retire_dmem_wdata = MEM_WB_dmem_wdata;
     assign o_retire_dmem_rdata = MEM_WB_dmem_rdata;
-
 endmodule
 
 `default_nettype wire
