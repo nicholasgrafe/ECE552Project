@@ -74,10 +74,10 @@ module cache (
     // 32 sets * 2 ways per set * 16 bytes per way = 1K cache
     localparam O = 4;            // 4 bit offset => 16 byte cache line
     localparam S = 5;            // 5 bit set index => 32 sets
-    localparam DEPTH = 2 ** S;   // 32 sets
+    localparam DEPTH = 32;       // 32 sets
     localparam W = 2;            // 2 way set associative, NMRU
     localparam T = 32 - O - S;   // 23 bit tag
-    localparam D = 2 ** O / 4;   // 16 bytes per line / 4 bytes per word = 4 words per line
+    localparam D = 4;            // 16 bytes per line / 4 bytes per word = 4 words per line
 
     // The following memory arrays model the cache structure. As this is
     // an internal implementation detail, you are *free* to modify these
@@ -88,10 +88,165 @@ module cache (
     reg [   31:0] datas1 [DEPTH - 1:0][D - 1:0];
     reg [T - 1:0] tags0  [DEPTH - 1:0];
     reg [T - 1:0] tags1  [DEPTH - 1:0];
-    reg [1:0] valid [DEPTH - 1:0];
-    reg       lru   [DEPTH - 1:0];
+    reg [DEPTH - 1:0] valid0;
+    reg [DEPTH - 1:0] valid1;
+    reg [DEPTH - 1:0] lru;
 
-    // Fill in your implementation here.
+    // decode address to tag, index, and offset
+    wire [T-1:0] req_tag   = i_req_addr[31 : O+S];
+    wire [S-1:0] req_index = i_req_addr[O+S-1 : O  ];
+    wire [1:0]   req_word  = i_req_addr[O-1 : 2  ];
+
+    // check for hit in either set
+    wire hit0 = valid0[req_index] && (tags0[req_index] == req_tag);
+    wire hit1 = valid1[req_index] && (tags1[req_index] == req_tag);
+    wire hit = hit0 | hit1;
+    wire hit_way = hit1;
+
+    // return value on read hit
+    assign o_res_rdata = hit1 ? datas1[req_index][req_word]
+                              : datas0[req_index][req_word];
+
+    // cache replacement
+    // fill invalid ways first, otherwise evict the least recently used line
+    wire replace_way = !valid0[req_index] ? 1'b0 :
+                       !valid1[req_index] ? 1'b1 :
+                       lru[req_index];
+
+    // CACHE STATES
+    // S_IDLE: Handle read/write hits immediately; go to fill on miss
+    // S_FILL: Fetch missing cache line from memory (write-allocate)
+    // S_WT: Complete write after a miss by updating cache and memory (write through)
+    localparam S_IDLE = 2'd0;
+    localparam S_FILL = 2'd1;
+    localparam S_WT   = 2'd2;
+    reg [1:0] state;
+
+    // original request info used while during cache miss or deferred write
+    reg lat_wen;
+    reg [3:0] lat_mask;
+    reg [31:0] lat_wdata;
+    reg lat_way;
+    reg [T-1:0] lat_tag;
+    reg [S-1:0] lat_index;
+    reg [1:0] lat_word;
+
+    // pipeline requests
+    reg [2:0] fill_req_idx;
+    reg [2:0] fill_resp_idx;
+
+    wire req_active = i_req_ren | i_req_wen;
+    wire read_hit_idle  = (state == S_IDLE) && i_req_ren && hit;
+    wire write_hit_idle = (state == S_IDLE) && i_req_wen && hit;
+    wire miss_idle = (state == S_IDLE) && req_active && !hit;
+    assign o_busy = (state != S_IDLE) || miss_idle;
+
+    // write-data merges: one using current request inputs for hits, and 
+    // one using saved values for write-miss completion
+    wire [31:0] req_mask_ext = {{8{i_req_mask[3]}}, {8{i_req_mask[2]}},
+                                 {8{i_req_mask[1]}}, {8{i_req_mask[0]}}};
+
+    wire [31:0] hit_cache_word = hit_way ? datas1[req_index][req_word]
+                                         : datas0[req_index][req_word];
+
+    wire [31:0] hit_merged = (hit_cache_word & ~req_mask_ext) |
+                             (i_req_wdata & req_mask_ext);
+
+    wire [31:0] lat_mask_ext = {{8{lat_mask[3]}}, {8{lat_mask[2]}},
+                                 {8{lat_mask[1]}}, {8{lat_mask[0]}}};
+
+    wire [31:0] lat_cache_word = lat_way ? datas1[lat_index][lat_word]
+                                         : datas0[lat_index][lat_word];
+
+    wire [31:0] lat_merged = (lat_cache_word & ~lat_mask_ext) |
+                             (lat_wdata & lat_mask_ext);
+
+    // Drive memory requests only when the memory is ready to accept them.
+    assign o_mem_ren  = (state == S_FILL) && (fill_req_idx < 3'd4) && i_mem_ready;
+    assign o_mem_wen  = ((state == S_WT) && i_mem_ready) || (write_hit_idle && i_mem_ready);
+    assign o_mem_addr = (state == S_FILL) ? {lat_tag, lat_index, fill_req_idx[1:0], 2'b00}
+                      : (state == S_WT) ? {lat_tag, lat_index, lat_word, 2'b00}
+                      : write_hit_idle ? {i_req_addr[31:2], 2'b00}
+                      : 32'h0;
+    assign o_mem_wdata = (state == S_WT) ? lat_merged : hit_merged;
+
+    // CACHE IMPLEMENTATION (sequential logic)
+    always @(posedge i_clk) begin
+        if (i_rst) begin
+            state <= S_IDLE;
+            fill_req_idx  <= 3'd0;
+            fill_resp_idx <= 3'd0;
+            valid0 <= {DEPTH{1'b0}};
+            valid1 <= {DEPTH{1'b0}};
+            lru    <= {DEPTH{1'b0}};
+        end else begin
+            case (state)
+                S_IDLE: begin
+                    if (miss_idle) begin
+                        // cache miss
+                        state <= S_FILL;
+                        fill_req_idx  <= 3'd0;
+                        fill_resp_idx <= 3'd0;
+                        lat_wen <= i_req_wen;
+                        lat_mask <= i_req_mask;
+                        lat_wdata <= i_req_wdata;
+                        lat_tag <= req_tag;
+                        lat_index <= req_index;
+                        lat_word <= req_word;
+                        lat_way <= replace_way;
+                    end else if (write_hit_idle) begin
+                        // write hit (write through)
+                        if (hit_way == 1'b0) begin
+                            datas0[req_index][req_word] <= hit_merged;
+                        end else begin
+                            datas1[req_index][req_word] <= hit_merged;
+                        end
+                        lru[req_index] <= ~hit_way;
+                    end else if (read_hit_idle) begin
+                        lru[req_index] <= ~hit_way;
+                    end
+                end
+                S_FILL: begin
+                    // issue the next pipelined request when memory accepts it.
+                    if (o_mem_ren) begin
+                        fill_req_idx <= fill_req_idx + 3'd1;
+                    end
+                    // consume responses as they arrive (in order).
+                    if (i_mem_valid) begin
+                        if (lat_way == 1'b0) begin
+                            datas0[lat_index][fill_resp_idx[1:0]] <= i_mem_rdata;
+                        end else begin
+                            datas1[lat_index][fill_resp_idx[1:0]] <= i_mem_rdata;
+                        end
+                        fill_resp_idx <= fill_resp_idx + 3'd1;
+                        if (fill_resp_idx == 3'd3) begin
+                            if (lat_way == 1'b0) begin
+                                tags0[lat_index] <= lat_tag;
+                                valid0[lat_index] <= 1'b1;
+                            end else begin
+                                tags1[lat_index] <= lat_tag;
+                                valid1[lat_index] <= 1'b1;
+                            end
+                            lru[lat_index] <= ~lat_way;
+                            state <= lat_wen ? S_WT : S_IDLE;
+                        end
+                    end
+                end
+                S_WT: begin
+                    // wait for write-through and update cache for cache miss
+                    if (i_mem_ready) begin
+                        if (lat_way == 1'b0) begin
+                            datas0[lat_index][lat_word] <= lat_merged;
+                        end else begin
+                            datas1[lat_index][lat_word] <= lat_merged;
+                        end
+                        state <= S_IDLE;
+                    end
+                end
+                default: state <= S_IDLE;
+            endcase
+        end
+    end
 endmodule
 
 `default_nettype wire
